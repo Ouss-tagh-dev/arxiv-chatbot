@@ -29,4 +29,7 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
-arxiv_dataset/
+data/raw/
+data/embeddings/
+data/processed/
+data/logs/
