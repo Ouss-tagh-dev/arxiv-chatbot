@@ -11,6 +11,7 @@ import logging
 from pathlib import Path
 import unicodedata
 from datetime import datetime
+import pytz  # Add this import
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -286,7 +287,8 @@ class ArxivDataCleaner:
         df = df[df['id'].str.match(r'^\d+\.\d+', na=False)]
         
         # Remove articles with future dates (likely errors)
-        current_date = datetime.now()
+        # FIX: Make current_date timezone-aware to match published_date
+        current_date = datetime.now(pytz.UTC)  # Create timezone-aware datetime
         df = df[df['published_date'] <= current_date]
         
         filtered_count = initial_count - len(df)
