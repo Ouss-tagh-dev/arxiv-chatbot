@@ -1,10 +1,11 @@
 import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
-import argparse
-from interface import main as streamlit_main
-from chatbot import ArxivChatbot
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+
+from src.interface import main as streamlit_main
+from src.chatbot import ArxivChatbot
 import logging
+import argparse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

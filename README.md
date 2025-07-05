@@ -1,6 +1,6 @@
 # arxiv-chatbot
 
-scopus_chatbot_project/
+arxiv_chatbot_project/
 │
 ├── data/                         # Données brutes et nettoyées
 │   ├── raw/                      # Données extraites brutes (CSV, JSON)

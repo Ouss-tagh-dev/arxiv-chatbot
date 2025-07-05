@@ -212,18 +212,22 @@ class ArxivDataCleaner:
         """Handle missing values in the dataset."""
         logger.info("Handling missing values...")
         
-        # Count missing values
-        missing_stats = df.isnull().sum()
-        self.cleaning_stats['missing_values'] = missing_stats.to_dict()
+        # Track missing values
+        missing_counts = {}
+        for col in df.columns:
+            missing_counts[col] = df[col].isna().sum()
         
-        # Fill missing values with appropriate defaults
-        df['title'] = df['title'].fillna('No Title')
-        df['summary'] = df['summary'].fillna('No Summary Available')
+        self.cleaning_stats['missing_values'] = missing_counts
+        
+        # Fill missing values with sensible defaults
+        df['title'] = df['title'].fillna('Untitled')
+        df['summary'] = df['summary'].fillna('No summary available')
         df['author'] = df['author'].fillna('Unknown Author')
-        df['primary_category'] = df['primary_category'].fillna('Unknown')
         df['category'] = df['category'].fillna('Unknown')
-        
-        # Keep DOI and journal_ref as nullable
+        df['primary_category'] = df['primary_category'].fillna('Unknown')  # More permissive
+        df['comment'] = df['comment'].fillna('')  # More permissive
+        df['doi'] = df['doi'].fillna('')
+        df['journal_ref'] = df['journal_ref'].fillna('')
         
         return df
     
@@ -278,13 +282,14 @@ class ArxivDataCleaner:
         initial_count = len(df)
         
         # Remove articles with very short titles (likely corrupted)
-        df = df[df['title'].str.len() >= 10]
+        df = df[df['title'].str.len() >= 3]  # Reduced from 5 to 3
         
         # Remove articles with very short summaries (likely incomplete)
-        df = df[df['summary'].str.len() >= 50]
+        df = df[df['summary'].str.len() >= 10]  # Reduced from 20 to 10
         
-        # Remove articles with invalid ArXiv IDs
-        df = df[df['id'].str.match(r'^\d+\.\d+', na=False)]
+        # Remove articles with invalid ArXiv IDs - very permissive
+        # Accept any ID that contains at least one number
+        df = df[df['id'].str.contains(r'\d+', na=False)]
         
         # Remove articles with future dates (likely errors)
         # FIX: Make current_date timezone-aware to match published_date
@@ -409,11 +414,17 @@ if __name__ == "__main__":
     
     # Load sample data
     loader = ArxivDataLoader("data/raw/articles.csv")
-    df = loader.load_data(nrows=1000)
+    df = loader.load_data(nrows=10000)  # Increased from 1000 to 10000
+    
+    print(f"Loaded {len(df)} articles from raw data")
+    print(f"Sample columns: {df.columns.tolist()}")
+    print(f"Sample ID: {df['id'].iloc[0] if len(df) > 0 else 'No data'}")
     
     # Clean data
     cleaner = ArxivDataCleaner()
     df_clean = cleaner.clean_dataset(df)
+    
+    print(f"After cleaning: {len(df_clean)} articles")
     
     # Print cleaning statistics
     print("Cleaning Statistics:")

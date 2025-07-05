@@ -21,7 +21,8 @@ class ArxivEmbedder:
         Args:
             model_name: Name of the sentence transformer model to use
         """
-        self.model = SentenceTransformer(model_name)
+        # Force le chargement sur CPU pour éviter l'erreur meta tensor
+        self.model = SentenceTransformer(model_name, device='cpu')
         self.model_name = model_name
         
     def generate_embeddings(self, texts: List[str], batch_size: int = 32) -> np.ndarray:
