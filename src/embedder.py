@@ -13,17 +13,30 @@ import pickle
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Global model cache
+_MODEL_CACHE = {}
+
 class ArxivEmbedder:
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         """
         Initialize the embedder with a sentence transformer model.
+        Uses global cache to avoid reloading the model.
         
         Args:
             model_name: Name of the sentence transformer model to use
         """
-        # Force le chargement sur CPU pour éviter l'erreur meta tensor
-        self.model = SentenceTransformer(model_name, device='cpu')
         self.model_name = model_name
+        
+        # Use global cache to avoid reloading the model
+        if model_name not in _MODEL_CACHE:
+            logger.info(f"Loading model {model_name} (this will only happen once)...")
+            # Force le chargement sur CPU pour éviter l'erreur meta tensor
+            _MODEL_CACHE[model_name] = SentenceTransformer(model_name, device='cpu')
+            logger.info(f"Model {model_name} loaded and cached successfully")
+        else:
+            logger.info(f"Using cached model {model_name}")
+            
+        self.model = _MODEL_CACHE[model_name]
         
     def generate_embeddings(self, texts: List[str], batch_size: int = 32) -> np.ndarray:
         """

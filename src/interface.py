@@ -3,14 +3,9 @@ Streamlit interface for the arXiv chatbot.
 """
 
 import streamlit as st
-from search_engine import ArxivSearchEngine
-from embedder import ArxivEmbedder
-from data_loader import ArxivDataLoader
-import pickle
-import os
-from pathlib import Path
-import pandas as pd
 from chatbot import ArxivChatbot
+import time
+import pandas as pd
 
 # Configure page
 st.set_page_config(
@@ -59,61 +54,52 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-@st.cache_resource
-def load_components():
-    """Load the search engine and embedder with caching."""
-    # Load data
-    loader = ArxivDataLoader("data/processed/articles_clean.csv")
-    df = loader.load_data()
-    
-    # Clean the data - remove rows with missing critical information
-    df = df.dropna(subset=['published_date', 'primary_category'])
-    
-    # Ensure published_date is properly parsed
-    df['published_date'] = pd.to_datetime(df['published_date'], errors='coerce')
-    df = df.dropna(subset=['published_date'])  # Remove rows where date parsing failed
-    
-    # Load embeddings and index
-    embedder = ArxivEmbedder()
-    search_engine = ArxivSearchEngine()
-    
-    embeddings_path = "data/embeddings/embeddings_all-MiniLM-L6-v2.pkl"
-    index_path = "data/embeddings/arxiv_faiss_index.index"
-    metadata_path = "data/embeddings/arxiv_metadata.pkl"
-    
-    if os.path.exists(index_path):
-        search_engine.load_index(index_path, metadata_path)
-    else:
-        embeddings = embedder.load_embeddings(embeddings_path)
-        search_engine.build_index(embeddings)
-        search_engine.save_index(index_path, metadata_path)
+@st.cache_resource(ttl=None)
+def initialize_chatbot():
+    """
+    Initialize chatbot ONCE and cache it permanently.
+    This function will only run once per session.
+    """
+    with st.spinner("🔄 Initialisation du chatbot et chargement des données..."):
+        start_time = time.time()
         
-    search_engine.load_article_data(df)
-    
-    return embedder, search_engine, df
-
-@st.cache_resource
-def load_chatbot():
-    """Load the chatbot with caching."""
-    return ArxivChatbot()
+        # Create chatbot instance
+        chatbot = ArxivChatbot()
+        
+        # Calculate loading time
+        load_time = time.time() - start_time
+        
+        # Store initialization info in session state
+        st.session_state.chatbot_ready = True
+        st.session_state.load_time = load_time
+        st.session_state.total_articles = len(chatbot.df)
+        
+        st.success(f"✅ Chatbot initialisé en {load_time:.2f} secondes")
+        return chatbot
 
 def main():
     st.markdown('<h1 class="main-header">arXiv Chatbot</h1>', unsafe_allow_html=True)
 
-    # Simulate database info (since only arXiv CSV is used)
-    try:
-        loader = ArxivDataLoader("data/processed/articles_clean.csv")
-        df = loader.load_data()
-        total_articles = len(df)
-        db_status = 'Connecté' if total_articles > 0 else 'Non connecté'
-    except Exception:
-        total_articles = 0
-        db_status = 'Erreur'
+    # Initialize session state
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "chatbot_ready" not in st.session_state:
+        st.session_state.chatbot_ready = False
+    if "total_articles" not in st.session_state:
+        st.session_state.total_articles = 0
+
+    # Load chatbot (will be cached after first load)
+    chatbot = initialize_chatbot()
+    
+    # Display database info
+    total_articles = len(chatbot.df)
+    db_status = 'Connecté' if total_articles > 0 else 'Non connecté'
 
     st.markdown(f'''
     <div class="database-info">
     <strong>✅ Base de données arXiv :</strong><br>
-    - Statut : {db_status} ({total_articles} articles)<br>
+    - Statut : {db_status} ({total_articles:,} articles)<br>
+    - Mode complet avec cache optimisé
     </div>
     ''', unsafe_allow_html=True)
 
@@ -134,15 +120,27 @@ def main():
             placeholder="Ex: Smith, John, etc."
         )
         if total_articles > 0:
-            min_year = int(df["published_date"].dt.year.min())
-            max_year = int(df["published_date"].dt.year.max())
-            year_filter = st.selectbox(
-                "Année",
-                options=["Toutes"] + [str(y) for y in range(max_year, min_year-1, -1)],
-                help="Filtrer par année de publication"
-            )
+            # Fix date parsing for year filter
+            try:
+                # Ensure published_date is datetime
+                if 'published_date' in chatbot.df.columns:
+                    if chatbot.df['published_date'].dtype == 'object':
+                        chatbot.df['published_date'] = pd.to_datetime(chatbot.df['published_date'], errors='coerce')
+                    
+                    min_year = int(chatbot.df["published_date"].dt.year.min())
+                    max_year = int(chatbot.df["published_date"].dt.year.max())
+                    year_filter = st.selectbox(
+                        "Année",
+                        options=["Toutes"] + [str(y) for y in range(max_year, min_year-1, -1)],
+                        help="Filtrer par année de publication"
+                    )
+                else:
+                    year_filter = "Toutes"
+            except:
+                year_filter = "Toutes"
+            
             # Fix category extraction: get all unique, non-null, non-'Unknown' categories
-            categories = sorted([c for c in df["primary_category"].dropna().unique() if c and c != 'Unknown'])
+            categories = sorted([c for c in chatbot.df["primary_category"].dropna().unique() if c and c != 'Unknown'])
             selected_categories = st.multiselect(
                 "Catégories",
                 categories,
@@ -157,13 +155,12 @@ def main():
         - Articles récents sur deep learning
         - Auteurs spécialisés en NLP
         - Tendances en computer vision
+        - 2023 cat:cs.AI résumé
         """)
 
     # --- CHAT INTERFACE ---
     st.markdown("## Conversation avec l'assistant")
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
+    
     # Display chat history
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
@@ -171,78 +168,91 @@ def main():
 
     # Chat input at the bottom
     if prompt := st.chat_input("Posez votre question sur arXiv..."):
+        # Only process if chatbot is ready
+        if not st.session_state.chatbot_ready:
+            st.error("⏳ Veuillez attendre que le chatbot soit initialisé...")
+            return
+            
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
         
         # --- SEARCH LOGIC ---
         try:
-            embedder, search_engine, df = load_components()
-            chatbot = load_chatbot()
-            
-            filtered_df = df.copy()
-            # Apply year filter
-            if total_articles > 0 and year_filter != "Toutes":
-                filtered_df = filtered_df[filtered_df["published_date"].dt.year == int(year_filter)]
-            # Apply category filter
-            if total_articles > 0 and selected_categories:
-                filtered_df = filtered_df[filtered_df["primary_category"].isin(selected_categories)]
-            # Apply author filter (case-insensitive substring match)
-            if total_articles > 0 and author_filter.strip():
-                filtered_df = filtered_df[filtered_df["author"].str.contains(author_filter, case=False, na=False)]
-            
-            search_engine.load_article_data(filtered_df)
-            results = search_engine.search_by_text(prompt, embedder, k=num_results)
-            
-            # Generate intelligent response using chatbot
-            response = chatbot.generate_response(prompt, results)
-            
-            # Display the intelligent response
-            with st.chat_message("assistant"):
-                st.markdown(response)
-            
-            # Add response to chat history
-            st.session_state.messages.append({"role": "assistant", "content": response})
-            
-            # Display detailed results in expandable sections
-            if results:
-                st.markdown("### 📚 Articles détaillés")
-                for i, r in enumerate(results):
-                    with st.expander(f"{i+1}. {r.get('title', 'No Title')} (Sim: {r.get('similarity', 0):.3f})"):
-                        st.markdown('<div class="result-card">', unsafe_allow_html=True)
-                        st.markdown(f"**Auteurs**: {r.get('author', 'Unknown')}")
-                        pub_date = r.get('published_date', 'Unknown')
-                        if pd.notna(pub_date):
-                            if isinstance(pub_date, str):
-                                pub_date = pd.to_datetime(pub_date).strftime('%Y-%m-%d')
-                            else:
-                                pub_date = pub_date.strftime('%Y-%m-%d')
-                        st.markdown(f"**Publié**: {pub_date}")
-                        # Show correct category
-                        cat = r.get('category', r.get('primary_category', ''))
-                        if not cat or cat == 'Unknown':
-                            cat = r.get('primary_category', '')
-                        st.markdown(f"**Catégories**: {cat if cat else 'Non spécifié'}")
-                        summary = r.get('summary', 'No summary available')
-                        if len(summary) > 500:
-                            summary = summary[:500] + "..."
-                        st.markdown(f"**Résumé**: {summary}")
-                        arxiv_id = r.get('id', '')
-                        if arxiv_id:
-                            st.markdown(f"[Lien arXiv](https://arxiv.org/abs/{arxiv_id})")
-                        doi = r.get('doi')
-                        if doi and pd.notna(doi):
-                            st.markdown(f"[DOI](https://doi.org/{doi})")
-                        st.markdown('</div>', unsafe_allow_html=True)
-            else:
-                st.markdown("### ❌ Aucun article trouvé")
-                st.info("Essayez avec des mots-clés différents ou une question plus générale.")
+            with st.spinner("🔍 Recherche en cours..."):
+                # Apply filters to the query if needed
+                enhanced_query = prompt
                 
+                # Add year filter to query if selected
+                if year_filter != "Toutes":
+                    enhanced_query += f" {year_filter}"
+                
+                # Add category filter to query if selected
+                if selected_categories:
+                    for cat in selected_categories:
+                        enhanced_query += f" cat:{cat}"
+                
+                # Add author filter to query if provided
+                if author_filter.strip():
+                    enhanced_query += f" auteur:{author_filter}"
+                
+                # Search using the chatbot (which handles all the logic)
+                results = chatbot.search_articles(enhanced_query, k=num_results)
+                
+                # Generate intelligent response using chatbot
+                response = chatbot.generate_response(prompt, results)
+                
+                # Display the intelligent response
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                with st.chat_message("assistant"):
+                    st.markdown(response)
+                
+                # Display detailed results in expandable sections (original design)
+                if results:
+                    st.markdown("### 📚 Articles détaillés")
+                    for i, r in enumerate(results):
+                        with st.expander(f"{i+1}. {r.get('title', 'No Title')} (Sim: {r.get('similarity', 0):.3f})"):
+                            st.markdown('<div class="result-card">', unsafe_allow_html=True)
+                            st.markdown(f"**Auteurs**: {r.get('author', 'Unknown')}")
+                            pub_date = r.get('published_date', 'Unknown')
+                            if pd.notna(pub_date):
+                                if isinstance(pub_date, str):
+                                    try:
+                                        pub_date = pd.to_datetime(pub_date).strftime('%Y-%m-%d')
+                                    except:
+                                        pass
+                                else:
+                                    try:
+                                        pub_date = pub_date.strftime('%Y-%m-%d')
+                                    except:
+                                        pass
+                            st.markdown(f"**Publié**: {pub_date}")
+                            # Show correct category
+                            cat = r.get('category', r.get('primary_category', ''))
+                            if not cat or cat == 'Unknown':
+                                cat = r.get('primary_category', '')
+                            st.markdown(f"**Catégories**: {cat if cat else 'Non spécifié'}")
+                            summary = r.get('summary', 'No summary available')
+                            if len(summary) > 500:
+                                summary = summary[:500] + "..."
+                            st.markdown(f"**Résumé**: {summary}")
+                            arxiv_id = r.get('id', '')
+                            if arxiv_id:
+                                st.markdown(f"[Lien arXiv](https://arxiv.org/abs/{arxiv_id})")
+                            doi = r.get('doi')
+                            if doi and pd.notna(doi):
+                                st.markdown(f"[DOI](https://doi.org/{doi})")
+                            st.markdown('</div>', unsafe_allow_html=True)
+                else:
+                    st.markdown("### ❌ Aucun article trouvé")
+                    st.info("Essayez avec des mots-clés différents ou une question plus générale.")
+                            
         except Exception as e:
-            error_msg = f"Erreur lors de la recherche : {e}"
-            with st.chat_message("assistant"):
-                st.error(error_msg)
+            error_msg = f"❌ Erreur lors de la recherche : {str(e)}"
             st.session_state.messages.append({"role": "assistant", "content": error_msg})
+            with st.chat_message("assistant"):
+                st.markdown(error_msg)
+            st.error(f"Erreur : {str(e)}")
 
     # --- TABS FOR ANALYTICS/ADVANCED SEARCH ---
     tab1, tab2 = st.tabs(["Analyses", "Recherche avancée"])
@@ -251,5 +261,5 @@ def main():
     with tab2:
         st.markdown("_Recherche avancée à venir..._")
 
-if __name__ == "__main__":
-    main()
+# Export the main function
+__all__ = ['main']

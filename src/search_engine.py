@@ -1,5 +1,6 @@
 """
 Module for indexing and searching arXiv articles using FAISS.
+Optimized with caching for better performance.
 """
 
 import faiss
@@ -9,9 +10,13 @@ import logging
 import pickle
 from pathlib import Path
 import pandas as pd
+import hashlib
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Global cache for query embeddings
+_QUERY_CACHE = {}
 
 class ArxivSearchEngine:
     def __init__(self):
@@ -94,6 +99,32 @@ class ArxivSearchEngine:
         """
         self.article_data = df.set_index("id").to_dict("index")
         
+    def _get_cached_embedding(self, query_text: str, embedder) -> np.ndarray:
+        """
+        Get cached embedding for a query or generate new one.
+        
+        Args:
+            query_text: Text query
+            embedder: ArxivEmbedder instance
+            
+        Returns:
+            Query embedding
+        """
+        # Create hash for caching
+        query_hash = hashlib.md5(query_text.encode()).hexdigest()
+        
+        if query_hash in _QUERY_CACHE:
+            logger.debug(f"Using cached embedding for query: {query_text[:50]}...")
+            return _QUERY_CACHE[query_hash]
+        
+        # Generate new embedding
+        embedding = embedder.generate_embeddings([query_text])[0]
+        
+        # Cache the embedding
+        _QUERY_CACHE[query_hash] = embedding
+        
+        return embedding
+        
     def search(self, query_embedding: np.ndarray, k: int = 5) -> List[Dict]:
         """
         Search for similar articles.
@@ -117,7 +148,7 @@ class ArxivSearchEngine:
         # Search the index
         distances, indices = self.index.search(query_embedding, k)
         
-        # Prepare results
+        # Prepare results efficiently
         results = []
         for i, distance in zip(indices[0], distances[0]):
             if i < 0:  # FAISS returns -1 for invalid indices
@@ -132,7 +163,7 @@ class ArxivSearchEngine:
         
     def search_by_text(self, query_text: str, embedder, k: int = 5) -> List[Dict]:
         """
-        Search using raw text query.
+        Search using raw text query with caching.
         
         Args:
             query_text: Text query to search for
@@ -142,8 +173,8 @@ class ArxivSearchEngine:
         Returns:
             List of result dictionaries with article metadata
         """
-        # Embed the query
-        query_embedding = embedder.generate_embeddings([query_text])[0]
+        # Get cached or generate embedding
+        query_embedding = self._get_cached_embedding(query_text, embedder)
         
         # Search using the embedding
         return self.search(query_embedding, k)
