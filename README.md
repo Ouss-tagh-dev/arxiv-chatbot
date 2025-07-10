@@ -32,6 +32,11 @@ arxiv_chatbot_project/
 
 
 
+### commands
+
+python -m venv arxiv_env
+source arxiv_env/bin/activate  
+arxiv_env\Scripts\activate 
 
 py src/data_cleaning.py --input data/raw/articles.csv --output data/processed/articles_clean.csv
 
@@ -39,3 +44,4 @@ py src/data_cleaning.py --input data/raw/articles.csv --output data/processed/ar
 py generate_index.py --data data/processed/articles_clean.csv --output data/embeddings/ --text_field summary --quick --nrows 20000
 
 streamlit run src/chatbot.py
+streamlit run src/chatbot.py -- --web
