@@ -45,3 +45,4 @@ py generate_index.py --data data/processed/articles_clean.csv --output data/embe
 
 streamlit run src/chatbot.py
 streamlit run src/chatbot.py -- --web
+python -m streamlit run src/chatbot.py -- --web
