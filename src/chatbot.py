@@ -2,9 +2,9 @@
 Enhanced conversational interface for the arXiv chatbot.
 Optimized for large datasets with memory management and batch processing.
 """
-from search_engine import OptimizedArxivSearchEngine as ArxivSearchEngine
-from embedder import EnhancedArxivEmbedder as ArxivEmbedder
-from data_loader import ArxivDataLoader
+from src.search_engine import OptimizedArxivSearchEngine as ArxivSearchEngine
+from src.embedder import EnhancedArxivEmbedder as ArxivEmbedder
+from src.data_loader import ArxivDataLoader
 import openai
 import os
 from typing import List, Dict, Optional, Generator

@@ -592,30 +592,59 @@ class EnhancedArxivDataCleaner:
         return df
     
     def _clean_categories(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Enhanced category cleaning."""
-        logger.info("Cleaning categories...")
-        
-        # Clean primary category
-        df['primary_category'] = df['primary_category'].str.strip()
-        
-        # Clean category list
+        """Enhanced category cleaning (robust extraction and fallback)."""
+        import ast
+        logger.info("Cleaning categories (robust)...")
+
+        # Supprimer la colonne _id si elle existe
+        if '_id' in df.columns:
+            df = df.drop(columns=['_id'])
+
+        # Nettoyer la colonne 'category' pour obtenir une liste propre
+        def extract_first_category(cat):
+            if pd.isna(cat):
+                return "unknown"
+            try:
+                # Si c'est une liste sous forme de chaîne, on prend le premier élément
+                if isinstance(cat, str) and cat.startswith("["):
+                    cat_list = ast.literal_eval(cat)
+                    if isinstance(cat_list, list) and len(cat_list) > 0:
+                        return cat_list[0]
+                # Sinon, on retourne la chaîne telle quelle
+                return str(cat).strip()
+            except Exception:
+                return "unknown"
+
+        # Nettoyer/extraire la catégorie principale
+        if 'primary_category' in df.columns:
+            df['primary_category'] = df['primary_category'].fillna('').astype(str).str.strip()
+            # Si la valeur est vide ou "nan", on tente de la récupérer depuis 'category'
+            mask_invalid = (df['primary_category'] == '') | (df['primary_category'].str.lower() == 'nan')
+            if 'category' in df.columns:
+                df.loc[mask_invalid, 'primary_category'] = df.loc[mask_invalid, 'category'].apply(extract_first_category)
+        elif 'category' in df.columns:
+            df['primary_category'] = df['category'].apply(extract_first_category)
+        else:
+            df['primary_category'] = 'unknown'
+
+        # Remplacer les valeurs manquantes ou invalides par 'unknown'
+        df['primary_category'] = df['primary_category'].replace(['', 'nan', 'None', None, float('nan')], 'unknown').fillna('unknown')
+
+        # Nettoyer la colonne 'category' (liste à chaîne propre)
         def clean_category_string(cat_string):
             if pd.isna(cat_string):
-                return ""
-            
-            # Split and clean categories
-            categories = re.split(r'[;,\s]+', str(cat_string))
-            cleaned_categories = []
-            
-            for cat in categories:
-                cat = cat.strip()
-                # ArXiv categories follow pattern like "cs.AI" or "math.CO"
-                if re.match(r'^[a-z-]+\.[A-Z]{2}$', cat) or re.match(r'^[a-z-]+$', cat):
-                    cleaned_categories.append(cat)
-            
-            return '; '.join(cleaned_categories)
-        
-        df['category'] = df['category'].apply(clean_category_string)
+                return "unknown"
+            try:
+                if isinstance(cat_string, str) and cat_string.startswith("["):
+                    cat_list = ast.literal_eval(cat_string)
+                    if isinstance(cat_list, list):
+                        return '; '.join([str(c).strip() for c in cat_list if c and str(c).strip().lower() != 'nan'])
+                return str(cat_string).strip()
+            except Exception:
+                return "unknown"
+        if 'category' in df.columns:
+            df['category'] = df['category'].apply(clean_category_string)
+
         return df
     
     def _handle_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
