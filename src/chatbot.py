@@ -1040,7 +1040,7 @@ class ArxivChatbot:
         for res in sorted_results:
             pub_date = res.get('published_date', '')
             if pub_date:
-                year = pub_date[:4]
+                year = pub_date.strftime('%Y') if isinstance(pub_date, pd.Timestamp) else pub_date[:4]
                 if year.isdigit() and int(year) >= current_year - 2:
                     recent_papers.append(res)
         
@@ -1120,7 +1120,13 @@ class ArxivChatbot:
         categories_by_year = {}
         
         for res in results:
-            year = res.get('published_date', '')[:4]
+            pub_date = res.get('published_date', '')
+            if isinstance(pub_date, pd.Timestamp):
+                year = pub_date.strftime('%Y')
+            elif isinstance(pub_date, str):
+                year = pub_date[:4]
+            else:
+                year = ''
             if year.isdigit():
                 years[year] = years.get(year, 0) + 1
                 
