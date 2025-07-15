@@ -243,7 +243,6 @@ def main():
         print(f"  Text-only: {Path(args.output).parent / f'text_only_{Path(args.output).name}'}")
         print(f"  Statistics: {stats_path}")
         
-        # Data quality recommendations
         print("\nData Quality Recommendations:")
         
         if quality_metrics.get('avg_title_length', 0) < 5:
