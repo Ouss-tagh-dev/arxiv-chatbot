@@ -103,6 +103,7 @@ class EnhancedArxivDataCleaner:
             'eg', 'ie', 'cf', 'sec', 'fig', 'eq', 'ref', 'def', 'thm',
             'prop', 'lemma', 'cor', 'proof', 'qed', 'iff', 'wrt', 'wlog'
         }
+
         
     def _load_comprehensive_stop_words(self) -> Set[str]:
         """Load comprehensive stop words including NLTK and custom scientific terms."""
@@ -200,6 +201,25 @@ class EnhancedArxivDataCleaner:
         """
         logger.info("Starting enhanced data cleaning pipeline...")
         
+        # Debug: Print DataFrame columns and first few rows
+        logger.info(f"Columns in DataFrame: {df.columns.tolist()}")
+        logger.info(f"Shape: {df.shape}")
+        if len(df) > 0:
+            logger.info("First few rows of DataFrame:")
+            logger.info(df.head().to_string())
+
+        # Check for required columns
+        required_columns = ['id', 'title', 'summary']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            logger.error(f"Missing required columns: {missing_columns}")
+            return df
+    
+        # If DataFrame is empty, return as-is
+        if len(df) == 0:
+            logger.warning("Empty DataFrame received - skipping cleaning")
+            return df
+    
         # Create a copy to avoid modifying original
         df_clean = df.copy()
         
@@ -210,7 +230,7 @@ class EnhancedArxivDataCleaner:
         # 1. Remove duplicates
         df_clean = self._remove_duplicates(df_clean)
         
-        # 2. Enhanced text cleaning
+        # 2. Enhanced text cleaning (creates title_clean and summary_clean)
         df_clean = self._enhanced_text_cleaning(df_clean, deep_clean)
         
         # 3. Normalize authors
@@ -267,7 +287,8 @@ class EnhancedArxivDataCleaner:
         df['comment'] = df['comment'].apply(lambda x: self._clean_text_basic(x))
         
         return df
-    
+
+
     def _deep_clean_text(self, text: str, deep_clean: bool = True) -> str:
         """
         Deep cleaning of text with comprehensive NLP preprocessing.
@@ -366,10 +387,7 @@ class EnhancedArxivDataCleaner:
             
             processed_tokens.append(lemma)
         
-        if preserve_structure:
-            return ' '.join(processed_tokens)
-        else:
-            return ' '.join(processed_tokens)
+        return ' '.join(processed_tokens)
     
     def _nltk_preprocess(self, text: str, preserve_structure: bool) -> str:
         """Preprocess text using NLTK."""
@@ -460,7 +478,8 @@ class EnhancedArxivDataCleaner:
         
         logger.info(f"Removed {removed_count} duplicate articles")
         return df_clean
-    
+
+
     def _remove_fuzzy_duplicates(self, df: pd.DataFrame) -> pd.DataFrame:
         """Remove articles with very similar titles using fuzzy matching."""
         from difflib import SequenceMatcher
@@ -483,8 +502,18 @@ class EnhancedArxivDataCleaner:
         """Extract keywords from titles and summaries."""
         logger.info("Extracting keywords...")
         
+        # Check if columns exist, default to empty string if not
+        title_col = 'title_clean' if 'title_clean' in df.columns else 'title' if 'title' in df.columns else None
+        summary_col = 'summary_clean' if 'summary_clean' in df.columns else 'summary' if 'summary' in df.columns else None
+        
+        # If neither title nor title_clean exists, skip keyword extraction
+        if title_col is None or summary_col is None:
+            logger.warning("Cannot extract keywords - missing title or summary columns")
+            df['keywords'] = ""
+            return df
+        
         # Combine title and summary for keyword extraction
-        df['combined_text'] = df['title_clean'] + ' ' + df['summary_clean']
+        df['combined_text'] = df[title_col].fillna('') + ' ' + df[summary_col].fillna('')
         
         # Extract keywords using TF-IDF
         try:
@@ -527,13 +556,18 @@ class EnhancedArxivDataCleaner:
             df['keywords'] = ""
         
         return df
-    
+
     def _filter_by_language(self, df: pd.DataFrame) -> pd.DataFrame:
         """Filter articles by language (keep English only)."""
         logger.info("Filtering by language...")
         
         initial_count = len(df)
         
+        # If DataFrame is empty or missing required columns, return as-is
+        if len(df) == 0 or 'title' not in df.columns or 'summary' not in df.columns:
+            logger.warning("Cannot filter by language - missing required columns or empty DataFrame")
+            return df
+    
         # Simple language detection based on common patterns
         def is_english(text):
             if pd.isna(text) or not text.strip():
@@ -550,8 +584,12 @@ class EnhancedArxivDataCleaner:
             return english_count >= len(first_words) * 0.1
         
         # Filter based on title and summary
-        df['is_english'] = df['title'].apply(is_english) | df['summary'].apply(is_english)
-        df_clean = df[df['is_english']].drop('is_english', axis=1)
+        try:
+            df['is_english'] = df['title'].apply(is_english) | df['summary'].apply(is_english)
+            df_clean = df[df['is_english']].drop('is_english', axis=1)
+        except Exception as e:
+            logger.error(f"Error during language filtering: {e}")
+            return df
         
         filtered_count = initial_count - len(df_clean)
         self.cleaning_stats['language_filtered'] = filtered_count
@@ -596,29 +634,29 @@ class EnhancedArxivDataCleaner:
         import ast
         logger.info("Cleaning categories (robust)...")
 
-        # Supprimer la colonne _id si elle existe
+        # Remove the _id column if it exists
         if '_id' in df.columns:
             df = df.drop(columns=['_id'])
 
-        # Nettoyer la colonne 'category' pour obtenir une liste propre
+        # Clean the 'category' column to get a clean list
         def extract_first_category(cat):
             if pd.isna(cat):
                 return "unknown"
             try:
-                # Si c'est une liste sous forme de chaîne, on prend le premier élément
+                # If it's a list as a string, take the first element
                 if isinstance(cat, str) and cat.startswith("["):
                     cat_list = ast.literal_eval(cat)
                     if isinstance(cat_list, list) and len(cat_list) > 0:
                         return cat_list[0]
-                # Sinon, on retourne la chaîne telle quelle
+                # Otherwise, return the string as is
                 return str(cat).strip()
             except Exception:
                 return "unknown"
 
-        # Nettoyer/extraire la catégorie principale
+        # Clean/extract the main category
         if 'primary_category' in df.columns:
             df['primary_category'] = df['primary_category'].fillna('').astype(str).str.strip()
-            # Si la valeur est vide ou "nan", on tente de la récupérer depuis 'category'
+            # If the value is empty or "nan", try to get it from 'category'
             mask_invalid = (df['primary_category'] == '') | (df['primary_category'].str.lower() == 'nan')
             if 'category' in df.columns:
                 df.loc[mask_invalid, 'primary_category'] = df.loc[mask_invalid, 'category'].apply(extract_first_category)
@@ -627,10 +665,10 @@ class EnhancedArxivDataCleaner:
         else:
             df['primary_category'] = 'unknown'
 
-        # Remplacer les valeurs manquantes ou invalides par 'unknown'
+        # Replace missing or invalid values with 'unknown'
         df['primary_category'] = df['primary_category'].replace(['', 'nan', 'None', None, float('nan')], 'unknown').fillna('unknown')
 
-        # Nettoyer la colonne 'category' (liste à chaîne propre)
+        # Clean the 'category' column (list to clean string)
         def clean_category_string(cat_string):
             if pd.isna(cat_string):
                 return "unknown"
@@ -646,7 +684,8 @@ class EnhancedArxivDataCleaner:
             df['category'] = df['category'].apply(clean_category_string)
 
         return df
-    
+
+
     def _handle_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
         """Enhanced missing value handling."""
         logger.info("Handling missing values...")
@@ -677,7 +716,6 @@ class EnhancedArxivDataCleaner:
             df['keywords'] = df['keywords'].fillna('')
         
         return df
-    
     
     def _validate_dates(self, df: pd.DataFrame) -> pd.DataFrame:
         """Enhanced date validation."""
@@ -727,27 +765,47 @@ class EnhancedArxivDataCleaner:
         df['doi'] = df['doi'].apply(clean_doi)
         return df
     
+
     def _filter_invalid_entries(self, df: pd.DataFrame) -> pd.DataFrame:
         """Enhanced filtering of invalid entries."""
         logger.info("Filtering invalid entries...")
         
         initial_count = len(df)
         
-        # Remove articles with very short titles
-        df = df[df['title'].str.len() >= 3]
+        # Remove withdrawn articles
+        withdrawal_conditions = []
+        if 'title' in df.columns:
+            withdrawal_conditions.append(df['title'].str.contains('withdrawn', case=False, na=False))
+        if 'summary' in df.columns:
+            withdrawal_conditions.append(df['summary'].str.contains('withdrawn', case=False, na=False))
+        if 'comment' in df.columns:
+            withdrawal_conditions.append(df['comment'].str.contains('withdrawn', case=False, na=False))
         
-        # Remove articles with very short summaries
-        df = df[df['summary'].str.len() >= 10]
+        if withdrawal_conditions:
+            df = df[~pd.concat(withdrawal_conditions, axis=1).any(axis=1)]
+            
+        # Remove articles with very short titles (only if title column exists)
+        if 'title' in df.columns:
+            df = df[df['title'].str.len() >= 3]
         
-        # Remove articles with invalid ArXiv IDs
-        df = df[df['id'].str.contains(r'\d+', na=False)]
+        # Remove articles with very short summaries (only if summary column exists)
+        if 'summary' in df.columns:
+            df = df[df['summary'].str.len() >= 10]
         
-        # Remove articles with future dates
-        current_date = datetime.now(pytz.UTC)
-        df = df[df['published_date'] <= current_date]
-       # Remove articles with suspicious patterns
-        df = df[~df['title'].str.contains(r'^[^a-zA-Z]', na=False)]  # No titles with only numbers/symbols
-        df = df[~df['summary'].str.contains(r'^[^a-zA-Z]', na=False)]  # No summaries with only numbers/symbols
+        # Remove articles with invalid ArXiv IDs (only if id column exists)
+        if 'id' in df.columns:
+            df = df[df['id'].str.contains(r'\d+', na=False)]
+        
+        # Remove articles with future dates (only if published_date column exists)
+        if 'published_date' in df.columns:
+            current_date = datetime.now(pytz.UTC)
+            df = df[df['published_date'] <= current_date]
+        
+        # Remove articles with suspicious patterns (only if columns exist)
+        if 'title' in df.columns:
+            df = df[~df['title'].str.contains(r'^[^a-zA-Z]', na=False)]  # No titles with only numbers/symbols
+        if 'summary' in df.columns:
+            df = df[~df['summary'].str.contains(r'^[^a-zA-Z]', na=False)]  # No summaries with only numbers/symbols
 
         # Remove articles with excessive repetition (spam-like)
         def has_excessive_repetition(text, threshold=0.7):
@@ -763,16 +821,21 @@ class EnhancedArxivDataCleaner:
             repetition_ratio = most_common_count / len(words)
             
             return repetition_ratio > threshold
-        
-        df = df[~df['title'].apply(has_excessive_repetition)]
-        df = df[~df['summary'].apply(has_excessive_repetition)]
+
+        # Check for excessive repetition in title (only if title column exists)
+        if 'title' in df.columns:
+            df = df[~df['title'].apply(has_excessive_repetition)]
+
+        # Check for excessive repetition in summary (only if summary column exists)
+        if 'summary' in df.columns:
+            df = df[~df['summary'].apply(has_excessive_repetition)]
         
         filtered_count = initial_count - len(df)
         self.cleaning_stats['filtered_invalid'] = filtered_count
         
         logger.info(f"Filtered out {filtered_count} invalid entries")
         return df
-    
+
     def get_cleaning_stats(self) -> Dict:
         """Get comprehensive statistics about the cleaning process."""
         return self.cleaning_stats
@@ -811,67 +874,67 @@ class EnhancedArxivDataCleaner:
         text, deep_clean, instance = args
         return instance._deep_clean_text(text, deep_clean)
 
-    def _enhanced_text_cleaning(self, df: pd.DataFrame, deep_clean: bool) -> pd.DataFrame:
-        """Optimized text cleaning for large datasets"""
-        from multiprocessing import Pool, cpu_count
+    # def _enhanced_text_cleaning(self, df: pd.DataFrame, deep_clean: bool) -> pd.DataFrame:
+    #     """Optimized text cleaning for large datasets"""
+    #     from multiprocessing import Pool, cpu_count
         
-        # Prepare arguments
-        title_args = [(text, deep_clean, self) for text in df['title'].fillna('').astype(str)]
-        summary_args = [(text, deep_clean, self) for text in df['summary'].fillna('').astype(str)]
+    #     # Prepare arguments
+    #     title_args = [(text, deep_clean, self) for text in df['title'].fillna('').astype(str)]
+    #     summary_args = [(text, deep_clean, self) for text in df['summary'].fillna('').astype(str)]
         
-        with Pool(cpu_count()) as pool:
-            df['title'] = pool.map(self._clean_text_wrapper, title_args)
-            df['summary'] = pool.map(self._clean_text_wrapper, summary_args)
+    #     with Pool(cpu_count()) as pool:
+    #         df['title'] = pool.map(self._clean_text_wrapper, title_args)
+    #         df['summary'] = pool.map(self._clean_text_wrapper, summary_args)
             
-        return df
+    #     return df
 
-        def save_cleaned_data(self, df: pd.DataFrame, output_path: str, save_separate_fields: bool = True):
-            """
-            Save cleaned data with multiple output formats.
+    #     def save_cleaned_data(self, df: pd.DataFrame, output_path: str, save_separate_fields: bool = True):
+    #         """
+    #         Save cleaned data with multiple output formats.
             
-            Args:
-                df: Cleaned DataFrame
-                output_path: Path to save the cleaned data
-                save_separate_fields: Whether to save separate cleaned fields
-            """
-            output_path = Path(output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+    #         Args:
+    #             df: Cleaned DataFrame
+    #             output_path: Path to save the cleaned data
+    #             save_separate_fields: Whether to save separate cleaned fields
+    #         """
+    #         output_path = Path(output_path)
+    #         output_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # Save main dataset
-            df.to_csv(output_path, index=False)
+    #         # Save main dataset
+    #         df.to_csv(output_path, index=False)
             
-            # Save separate cleaned fields if requested
-            if save_separate_fields:
-                # Save only essential columns for NLP model
-                essential_cols = ['id', 'title', 'title_clean', 'summary', 'summary_clean', 
-                                'author', 'published_date', 'primary_category', 'category']
+    #         # Save separate cleaned fields if requested
+    #         if save_separate_fields:
+    #             # Save only essential columns for NLP model
+    #             essential_cols = ['id', 'title', 'title_clean', 'summary', 'summary_clean', 
+    #                             'author', 'published_date', 'primary_category', 'category']
                 
-                # Add optional columns if they exist
-                optional_cols = ['keywords', 'doi', 'journal_ref']
-                for col in optional_cols:
-                    if col in df.columns:
-                        essential_cols.append(col)
+    #             # Add optional columns if they exist
+    #             optional_cols = ['keywords', 'doi', 'journal_ref']
+    #             for col in optional_cols:
+    #                 if col in df.columns:
+    #                     essential_cols.append(col)
                 
-                df_essential = df[essential_cols]
-                essential_path = output_path.parent / f"essential_{output_path.name}"
-                df_essential.to_csv(essential_path, index=False)
+    #             df_essential = df[essential_cols]
+    #             essential_path = output_path.parent / f"essential_{output_path.name}"
+    #             df_essential.to_csv(essential_path, index=False)
                 
-                # Save text-only version for training
-                text_only_path = output_path.parent / f"text_only_{output_path.name}"
-                df_text = df[['id', 'title_clean', 'summary_clean', 'primary_category']]
-                df_text.to_csv(text_only_path, index=False)
+    #             # Save text-only version for training
+    #             text_only_path = output_path.parent / f"text_only_{output_path.name}"
+    #             df_text = df[['id', 'title_clean', 'summary_clean', 'primary_category']]
+    #             df_text.to_csv(text_only_path, index=False)
             
-            # Save cleaning statistics
-            stats_path = output_path.parent / "enhanced_cleaning_stats.json"
-            import json
-            with open(stats_path, 'w') as f:
-                json.dump(self.cleaning_stats, f, indent=2, default=str)
+    #         # Save cleaning statistics
+    #         stats_path = output_path.parent / "enhanced_cleaning_stats.json"
+    #         import json
+    #         with open(stats_path, 'w') as f:
+    #             json.dump(self.cleaning_stats, f, indent=2, default=str)
             
-            logger.info(f"Saved cleaned data to {output_path}")
-            if save_separate_fields:
-                logger.info(f"Saved essential fields to {essential_path}")
-                logger.info(f"Saved text-only version to {text_only_path}")
-            logger.info(f"Saved cleaning statistics to {stats_path}")
+    #         logger.info(f"Saved cleaned data to {output_path}")
+    #         if save_separate_fields:
+    #             logger.info(f"Saved essential fields to {essential_path}")
+    #             logger.info(f"Saved text-only version to {text_only_path}")
+    #         logger.info(f"Saved cleaning statistics to {stats_path}")
 
     def save_cleaned_data(self, df: pd.DataFrame, output_path: str, save_separate_fields: bool = True):
         """

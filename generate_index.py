@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 """
-Script pour générer l'index FAISS et les métadonnées pour le chatbot arXiv.
-Optimized for 16GB RAM systems with sequential processing and memory management.
+Script to generate FAISS index and metadata for arXiv chatbot.
+Optimized for memory-constrained systems with sequential processing.
 """
 
 import sys
 import os
 import gc
-import numpy as np  # Added missing import
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
-
-from src.embedder import EnhancedArxivEmbedder as ArxivEmbedder
-from src.search_engine import OptimizedArxivSearchEngine as ArxivSearchEngine
-from src.data_loader import ArxivDataLoader
+import numpy as np
 import logging
 import argparse
 from pathlib import Path
 import psutil
+import pickle
+import faiss
 
-# Configuration du logging
+# Add src directory to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+
+from src.embedder import ArxivEmbedder
+from src.data_loader import ArxivDataLoader
+
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -35,76 +38,66 @@ def generate_index(data_path: str = "data/processed/articles_clean.csv",
                  nrows: int = None, 
                  text_field: str = "summary"):
     """
-    Génère l'index FAISS et les métadonnées pour le chatbot.
+    Generate FAISS index and metadata for the chatbot.
     Optimized for memory-constrained systems.
     """
     
-    # Créer le dossier de sortie
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    # Create output directory
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
     
-    logger.info("=== Génération de l'index FAISS ===")
-    logger.info(f"Fichier de données: {data_path}")
-    logger.info(f"Dossier de sortie: {output_dir}")
+    logger.info("=== Generating FAISS index ===")
+    logger.info(f"Data file: {data_path}")
+    logger.info(f"Output directory: {output_dir}")
     
-    # 1. Charger les données
-    logger.info("Chargement des données...")
+    # 1. Load data
+    logger.info("Loading data...")
     loader = ArxivDataLoader(data_path)
     df = loader.load_data(nrows=nrows)
-    logger.info(f"Chargé {len(df)} articles")
+    logger.info(f"Loaded {len(df)} articles")
     
-    # 2. Générer les embeddings avec optimisation mémoire
-    logger.info("Génération des embeddings...")
+    # 2. Generate embeddings with memory optimization
+    logger.info("Generating embeddings...")
     embedder = ArxivEmbedder()
     
-    # Configuration pour économiser la mémoire
+    # Memory-efficient processing configuration
     outer_batch_size = 512  # Number of articles to process at once
     inner_batch_size = 32   # Batch size for model inference
-    texts = df[text_field].fillna("").astype(str).tolist()
-    ids = df["id"].astype(str).tolist()
     
-    embeddings = {}
-    total_batches = (len(texts) // outer_batch_size) + 1
+    # Process in batches
+    all_embeddings = {}
+    total_batches = (len(df) // outer_batch_size) + 1
     
-    for i in range(0, len(texts), outer_batch_size):
-        batch_texts = texts[i:i + outer_batch_size]
-        batch_ids = ids[i:i + outer_batch_size]
+    for i in range(0, len(df), outer_batch_size):
+        batch_df = df.iloc[i:i + outer_batch_size]
         
-        logger.info(f"Traitement du lot {i//outer_batch_size + 1}/{total_batches} ({len(batch_texts)} articles)")
+        logger.info(f"Processing batch {i//outer_batch_size + 1}/{total_batches} ({len(batch_df)} articles)")
         
-        # Generate embeddings with small batches
-        batch_embeddings = embedder.model.encode(
-            batch_texts,
+        # Generate embeddings for this batch
+        batch_embeddings = embedder.embed_articles(
+            batch_df,
+            text_field=text_field,
             batch_size=inner_batch_size,
-            show_progress_bar=False,
-            convert_to_numpy=True,
-            normalize_embeddings=True
+            parallel=False
         )
         
         # Store results
-        for id_, embedding in zip(batch_ids, batch_embeddings):
-            embeddings[id_] = embedding
+        all_embeddings.update(batch_embeddings)
         
-        # Nettoyage mémoire périodique
+        # Periodic memory cleanup
         if check_memory(0.7) or (i % (5 * outer_batch_size) == 0 and i > 0):
-            logger.info("Nettoyage mémoire...")
+            logger.info("Performing memory cleanup...")
             embedder.clear_cache()
             gc.collect()
     
-    logger.info(f"Généré {len(embeddings)} embeddings")
+    logger.info(f"Generated {len(all_embeddings)} embeddings")
     
-    # 3. Sauvegarder les embeddings
-    logger.info("Sauvegarde des embeddings...")
-    embedder.save_embeddings(embeddings, output_dir)
+    # 3. Build FAISS index
+    logger.info("Building FAISS index...")
     
-    # 4. Construire l'index FAISS
-    logger.info("Construction de l'index FAISS...")
-    search_engine = ArxivSearchEngine()
-    
-    # Create article IDs list to match the order of embeddings
-    article_ids = list(embeddings.keys())
-    
-    # Convert embeddings to numpy array in the same order as article_ids
-    embedding_matrix = np.array([embeddings[id_] for id_ in article_ids], dtype=np.float32)
+    # Create ordered lists for index building
+    article_ids = list(all_embeddings.keys())
+    embedding_matrix = np.array([all_embeddings[id_] for id_ in article_ids]).astype('float32')
     
     # Validate embedding matrix
     if embedding_matrix.ndim != 2:
@@ -115,50 +108,54 @@ def generate_index(data_path: str = "data/processed/articles_clean.csv",
     
     logger.info(f"Embedding matrix shape: {embedding_matrix.shape}")
     
-    # Set article IDs in search engine before building index
-    search_engine.article_ids = article_ids
+    # Build index
+    dimension = embedding_matrix.shape[1]
+    index = faiss.IndexFlatIP(dimension)
+    faiss.normalize_L2(embedding_matrix)
+    index.add(embedding_matrix)
     
-    # Build index with error handling
-    try:
-        search_engine.build_index(embedding_matrix)
-        search_engine.load_article_data(df)
-    except Exception as e:
-        logger.error(f"Error building FAISS index: {e}")
-        logger.error(f"Embedding matrix shape: {embedding_matrix.shape}")
-        logger.error(f"Embedding matrix dtype: {embedding_matrix.dtype}")
-        raise
+    # Prepare metadata
+    metadata = {
+        "article_ids": article_ids,
+        "metadata": df.set_index("id").to_dict(orient="index")
+    }
     
-    # 5. Sauvegarder l'index et les métadonnées
-    logger.info("Sauvegarde de l'index et des métadonnées...")
-    index_path = os.path.join(output_dir, "arxiv_faiss_index.index")
-    metadata_path = os.path.join(output_dir, "arxiv_metadata.pkl")
+    # 4. Save index and metadata
+    logger.info("Saving index and metadata...")
     
-    search_engine.save_index(index_path, metadata_path)
+    # Save FAISS index
+    index_path = output_path / f"faiss_index_{embedder.model_name}.index"
+    faiss.write_index(index, str(index_path))
     
-    logger.info("=== Index généré avec succès ! ===")
-    logger.info(f"Index FAISS: {index_path}")
-    logger.info(f"Métadonnées: {metadata_path}")
+    # Save metadata
+    metadata_path = output_path / f"faiss_metadata_{embedder.model_name}.pkl"
+    with open(metadata_path, "wb") as f:
+        pickle.dump(metadata, f)
+    
+    logger.info("=== Index generated successfully! ===")
+    logger.info(f"FAISS index: {index_path}")
+    logger.info(f"Metadata: {metadata_path}")
 
 def generate_quick_index(data_path: str = "data/processed/articles_clean.csv",
                        output_dir: str = "data/embeddings/",
-                       nrows: int = 10000):  # Default to 10,000 for quick mode
+                       nrows: int = 10000):
     """
-    Génère un index rapide avec un sous-ensemble d'articles pour les tests.
+    Generate a quick index with a subset of articles for testing.
     """
-    logger.info(f"=== Génération d'un index rapide avec {nrows} articles ===")
+    logger.info(f"=== Generating quick index with {nrows} articles ===")
     generate_index(data_path, output_dir, nrows=nrows)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Génération de l'index FAISS pour le chatbot arXiv")
+    parser = argparse.ArgumentParser(description="Generate FAISS index for arXiv chatbot")
     parser.add_argument(
         "--data",
         default="data/processed/articles_clean.csv",
-        help="Chemin vers le fichier CSV des articles (défaut: data/processed/articles_clean.csv)"
+        help="Path to articles CSV file (default: data/processed/articles_clean.csv)"
     )
     parser.add_argument(
         "--output",
         default="data/embeddings/",
-        help="Dossier de sortie (défaut: data/embeddings/)"
+        help="Output directory (default: data/embeddings/)"
     )
     parser.add_argument(
         "--text_field",
@@ -168,13 +165,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--quick",
         action="store_true",
-        help="Générer un index rapide avec 10,000 articles seulement"
+        help="Generate quick index with 10,000 articles only"
     )
     parser.add_argument(
         "--nrows",
         type=int,
         default=None,
-        help="Nombre d'articles à traiter (défaut: tous)"
+        help="Number of articles to process (default: all)"
     )
 
     args = parser.parse_args()
@@ -186,8 +183,8 @@ if __name__ == "__main__":
         else:
             generate_index(args.data, args.output, args.nrows, args.text_field)
             
-        logger.info("Génération terminée avec succès!")
+        logger.info("Index generation completed successfully!")
         
     except Exception as e:
-        logger.error(f"Erreur lors de la génération: {e}")
+        logger.error(f"Error during generation: {e}")
         sys.exit(1)

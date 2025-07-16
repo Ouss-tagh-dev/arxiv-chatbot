@@ -24,11 +24,14 @@ logger = logging.getLogger(__name__)
 
 def setup_directories():
     """Create necessary directories for data processing."""
+    # In data_cleaning.py, modify setup_directories()
     directories = [
         "data/raw",
-        "data/processed",
-        "data/cleaned",
-        "logs"
+        "data/interim",  # For intermediate processing files
+        "data/processed",  # Final cleaned data for models
+        "data/cleaned",  # Various cleaned versions
+        "logs",
+        "stats"  # Separate directory for statistics
     ]
     
     for directory in directories:
@@ -71,7 +74,7 @@ def validate_input_data(df: pd.DataFrame) -> bool:
     logger.info("Input data validation passed")
     return True
 
-def create_sample_dataset(df: pd.DataFrame, sample_size: int = 1000) -> pd.DataFrame:
+def create_sample_dataset(df: pd.DataFrame, sample_size: int = 10000) -> pd.DataFrame:
     """
     Create a sample dataset for testing.
     
@@ -85,11 +88,20 @@ def create_sample_dataset(df: pd.DataFrame, sample_size: int = 1000) -> pd.DataF
     if len(df) <= sample_size:
         return df
     
-    # Stratified sampling by primary category
-    sample_df = df.groupby('primary_category').apply(
-        lambda x: x.sample(min(len(x), max(1, sample_size // df['primary_category'].nunique())))
-    ).reset_index(drop=True)
-    
+    try:
+        # Stratified sampling by primary category
+        sample_df = df.groupby('primary_category', group_keys=False).apply(
+            lambda x: x.sample(min(len(x), max(1, sample_size // df['primary_category'].nunique())))
+        )
+    # If we got an empty sample (can happen if primary_category is all NaN), fall back to random sampling
+        if len(sample_df) == 0:
+            sample_df = df.sample(min(len(df), sample_size))
+            
+    except Exception as e:
+        logger.warning(f"Stratified sampling failed, falling back to random sampling: {e}")
+        sample_df = df.sample(min(len(df), sample_size))
+
+        
     logger.info(f"Created sample dataset with {len(sample_df)} articles")
     return sample_df
 
@@ -130,6 +142,14 @@ def main():
         loader = ArxivDataLoader(args.input)
         df = loader.load_data()
         
+        # Debug: Print loaded data info
+        logger.info(f"\nLoaded DataFrame info:")
+        logger.info(f"Columns: {df.columns.tolist()}")
+        logger.info(f"Shape: {df.shape}")
+        logger.info("\nFirst few rows:")
+        logger.info(df.head().to_string())
+
+
         logger.info(f"Loaded {len(df)} articles in {time.time() - start_time:.2f} seconds")
         
         # Validate input data

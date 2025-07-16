@@ -3,7 +3,7 @@ Enhanced conversational interface for the arXiv chatbot.
 Optimized for large datasets with memory management and batch processing.
 """
 from src.search_engine import OptimizedArxivSearchEngine as ArxivSearchEngine
-from src.embedder import EnhancedArxivEmbedder as ArxivEmbedder
+from src.embedder import ArxivEmbedder
 from src.data_loader import ArxivDataLoader
 import openai
 import os
@@ -125,6 +125,7 @@ class ArxivChatbot:
     def __init__(self, 
                  openai_api_key: str = None, 
                  model_name: str = "all-MiniLM-L6-v2",
+                # model_name: str = "allenai/specter",
                  max_memory_gb: float = 4.0,
                  cache_dir: str = "data/cache",
                  enable_monitoring: bool = True):
@@ -228,8 +229,9 @@ class ArxivChatbot:
             self.search_engine = ArxivSearchEngine()
             
             # Try to load pre-built index
-            index_path = "data/embeddings/arxiv_faiss_index.index"
-            metadata_path = "data/embeddings/arxiv_metadata.pkl"
+            
+            index_path = "data/embeddings/faiss_index_all-MiniLM-L6-v2.index"
+            metadata_path = "data/embeddings/faiss_metadata_all-MiniLM-L6-v2.pkl"
             
             if os.path.exists(index_path) and os.path.exists(metadata_path):
                 logger.info("Loading existing FAISS index...")
@@ -241,10 +243,12 @@ class ArxivChatbot:
             logger.info("Initializing data loader...")
             self.loader = ArxivDataLoader("data/processed/articles_clean.csv")
             try:
-                self.df = self.loader.load_data()  # Make sure this loads the dataframe
+                self.df = self.loader.load_data()
+                if self.df is not None and not self.df.empty:
+                    self.search_engine.load_article_data(self.df)
             except Exception as e:
                 logger.error(f"Failed to load data: {e}")
-                self.df = pd.DataFrame()  # Create empty dataframe as fallback
+                self.df = pd.DataFrame()
 
 
     def web_interface(self):
@@ -656,7 +660,7 @@ class ArxivChatbot:
             
         try:
             # Perform search
-            results = self.search_engine.search_by_text(query, self.embedder, k)
+            results = self.search_engine.search_by_text(query, self.embedder, k, search_fields="all")
             
             # Cache results
             if len(self.response_cache) >= self.max_cache_size:
@@ -839,7 +843,15 @@ class ArxivChatbot:
         response += f"**🏆 Top Result:**\n"
         response += f"**{top_result.get('title', 'Untitled')}**\n"
         response += f"👥 *{top_result.get('author', 'Unknown authors')}*\n"
-        response += f"📅 *{top_result.get('published_date', 'Unknown date')}*\n"
+        
+        # Handle publication date (could be string, Timestamp, or other format)
+        pub_date = top_result.get('published_date', 'Unknown date')
+        if hasattr(pub_date, 'strftime'):  # If it's a Timestamp/datetime object
+            pub_date = pub_date.strftime('%Y-%m-%d')
+        elif isinstance(pub_date, str) and len(pub_date) > 10:  # If it's a long string
+            pub_date = pub_date[:10]
+        response += f"📅 *{pub_date}*\n"
+        
         response += f"📂 *{top_result.get('primary_category', 'Unknown category')}*\n"
         response += f"🎯 *Relevance: {top_result.get('similarity', 0):.1%}*\n\n"
         
@@ -866,9 +878,16 @@ class ArxivChatbot:
                 if len(author) > 50:
                     author = author[:50] + "..."
                 
+                # Handle publication date for additional papers
+                paper_date = paper.get('published_date', 'Unknown')
+                if hasattr(paper_date, 'strftime'):
+                    paper_date = paper_date.strftime('%Y-%m-%d')
+                elif isinstance(paper_date, str) and len(paper_date) > 10:
+                    paper_date = paper_date[:10]
+                
                 response += f"**{i}.** {title}\n"
                 response += f"   👥 {author} | "
-                response += f"📅 {paper.get('published_date', 'Unknown')[:10]} | "
+                response += f"📅 {paper_date} | "
                 response += f"📂 {paper.get('primary_category', 'Unknown')}\n"
                 response += f"   🎯 {paper.get('similarity', 0):.1%}\n\n"
         
@@ -889,9 +908,11 @@ class ArxivChatbot:
         # Year range
         years = []
         for res in results:
-            year = res.get('published_date', '')[:4]
-            if year.isdigit():
-                years.append(int(year))
+            date = res.get('published_date', '')
+            if hasattr(date, 'year'):  # If it's a Timestamp/datetime object
+                years.append(str(date.year))
+            elif isinstance(date, str) and len(date) >= 4:  # If it's a string with year
+                years.append(date[:4])
         
         if years:
             response += f"• **Publication range:** {min(years)} - {max(years)}\n"
@@ -903,7 +924,7 @@ class ArxivChatbot:
         response += f"• 'Summarize {query}' for key insights\n"
         
         return response
-
+    
 
     def _generate_statistics_response(self, query: str, results: List[Dict]) -> str:
         """Generate comprehensive statistics for any arXiv topic."""
@@ -924,9 +945,13 @@ class ArxivChatbot:
             categories[cat] = categories.get(cat, 0) + 1
             
             # Years
-            year = res.get('published_date', '')[:4]
-            if year.isdigit():
-                years[year] = years.get(year, 0) + 1
+            year = res.get('published_date', '')
+            if isinstance(year, pd.Timestamp):
+                year = year.strftime('%Y')
+            elif isinstance(year, str):
+                year = year[:4] if year else ''
+            else:
+                year = ''
             
             # Authors
             author_list = res.get('author', '').split(';')
@@ -990,37 +1015,252 @@ class ArxivChatbot:
 
 
     def _generate_author_response(self, query: str, results: List[Dict]) -> str:
-        """Generate author-focused response for any field."""
+        """
+        Smartly decide whether the user is asking:
+        (A) "Who wrote <paper title>?"  → return authors of that paper
+        (B) "written by <author>"       → list up to 10 papers by that author
+
+        `results` should be the already-available search results for the *raw* query
+        (typically semantic search over title+abstract+authors). We'll reuse them
+        for author-mode; in paper-mode we re-query by the extracted title.
+        """
+        import re
+
+        q = (query or "").strip()
+        if not q:
+            return "I didn't catch the author or title. Please try again."
+
+        # ------------------------------------------------------------
+        # Patterns
+        # ------------------------------------------------------------
+        who_pattern = r"^(?:who\s+wrote|who\s+is\s+the\s+author\s+of|author\s+of)\s+(.+)$"
+        author_pattern = r"^(?:written\s+by|papers?\s+by|by|author:)\s+(.+)$"
+
+        who_match = re.search(who_pattern, q, re.IGNORECASE)
+        author_match = re.search(author_pattern, q, re.IGNORECASE)
+
+        # ------------------------------------------------------------
+        # Ambiguity guard: If user wrote "written by X" but X looks like a paper title
+        # (many tokens, stopwords), we'll flip to who-mode. Conversely, if user wrote
+        # "author of X" but X looks like a short person name, flip to author-mode.
+        # ------------------------------------------------------------
+        def _looks_like_author_name(text: str) -> bool:
+            return self._looks_like_author_name(text)
+
+        # ------------------------------------------------------------
+        # Branch 1: explicit *who wrote / author of* pattern → paper-mode
+        # ------------------------------------------------------------
+        if who_match:
+            payload = who_match.group(1).strip()
+            # If payload *actually* looks like a name, redirect to author-mode
+            if _looks_like_author_name(payload):
+                return self._respond_author_mode(payload, results)
+            return self._respond_who_mode(payload)
+
+        # ------------------------------------------------------------
+        # Branch 2: explicit *written by / papers by / by / author:* → author-mode
+        # ------------------------------------------------------------
+        if author_match:
+            payload = author_match.group(1).strip()
+            # If payload seems like a long / title-like thing, flip to who-mode
+            if not _looks_like_author_name(payload):
+                return self._respond_who_mode(payload)
+            return self._respond_author_mode(payload, results)
+
+        # ------------------------------------------------------------
+        # Branch 3: no explicit pattern → infer by heuristic
+        # Long, title-like text → who-mode. Short, name-like → author-mode.
+        # ------------------------------------------------------------
+        if _looks_like_author_name(q):
+            return self._respond_author_mode(q, results)
+        else:
+            return self._respond_who_mode(q)
+
+
+    def _respond_author_mode(self, author_query: str, results: List[Dict]) -> str:
+        """
+        Given an *author_query* (user-typed name or fragment) and a pool of `results`
+        (semantic search on the user query), filter for papers where any author matches.
+        """
+        author_pattern = author_query.strip().strip('"').strip("'")
         if not results:
-            return self._generate_no_results_response(query, "author")
-        
-        authors = {}
-        author_papers = {}
-        
-        for res in results:
-            author_list = res.get('author', '').split(';')
-            for author in author_list:
-                author = author.strip()
-                if author:
-                    authors[author] = authors.get(author, 0) + 1
-                    if author not in author_papers:
-                        author_papers[author] = []
-                    author_papers[author].append(res)
-        
-        top_authors = sorted(authors.items(), key=lambda x: x[1], reverse=True)[:5]
-        
-        response = f"**Author analysis for '{query}':**\n\n"
-        response += f"Found {len(results)} papers by {len(authors)} unique authors.\n\n"
-        
-        response += "**Most prolific authors:**\n"
-        for author, count in top_authors:
-            response += f"• **{author}**: {count} papers\n"
-            # Show a recent paper by this author
-            recent_paper = max(author_papers[author], 
-                            key=lambda x: x.get('published_date', ''))
-            response += f"  Latest: \"{recent_paper.get('title', 'N/A')[:60]}...\"\n"
-        
+            return f"No results were available to check for author '{author_pattern}'."
+
+        # Collect matches
+        author_papers = []
+        for paper in results:
+            authors = paper.get('author', '')
+            if isinstance(authors, str) and self._author_match(author_pattern, authors):
+                author_papers.append(paper)
+
+        if not author_papers:
+            return f"No papers found matching author '{author_pattern}'. Try adjusting spelling (e.g., initials vs full name)."
+
+        # Sort newest first
+        author_papers.sort(key=lambda x: x.get('published_date', ''), reverse=True)
+
+        response = f"Papers by {author_pattern}:\n\n"
+        response += f"Found {len(author_papers)} papers:\n\n"
+
+        for i, paper in enumerate(author_papers[:10], 1):
+            response += f"{i}. {paper.get('title', 'Untitled')}\n"
+            response += f"   📅 Published: {self._format_pub_date(paper.get('published_date'))}\n"
+            response += f"   👥 Authors: {paper.get('author', 'Unknown authors')}\n"
+            response += f"   📂 Category: {paper.get('primary_category', 'Unknown category')}\n"
+            response += f"   🎯 Relevance: {paper.get('similarity', 0):.1%}\n"
+            response += f"   {self._format_links_block(paper, indent='   ')}\n\n"
+
+        return response.rstrip()  # trim last newline
+
+
+    def _respond_who_mode(self, paper_title_query: str) -> str:
+        """
+        Search specifically for a paper title and report its author list + metadata.
+        """
+        paper_results = self.search_articles(paper_title_query, k=5)
+        if not paper_results:
+            return f"I couldn't find the paper titled '{paper_title_query}'. Please double-check the title."
+
+        top_paper = paper_results[0]
+        authors = top_paper.get('author', 'Unknown authors')
+
+        response = f"The paper '{top_paper.get('title', paper_title_query)}' was written by:\n"
+        response += f"👥 {authors}\n\n"
+        response += f"📅 Published: {self._format_pub_date(top_paper.get('published_date'))}\n"
+        response += f"📂 Category: {top_paper.get('primary_category', 'Unknown category')}\n"
+        links_block = self._format_links_block(top_paper)
+        if links_block:
+            response += links_block
         return response
+
+
+    def _format_pub_date(self, pub_date) -> str:
+        """Return date string in 'YYYY-MM-DD HH:MM:SS+00:00' when possible."""
+        if pub_date in (None, '', 'Unknown date'):
+            return 'Unknown date'
+        try:
+            if hasattr(pub_date, 'strftime'):
+                return pub_date.strftime('%Y-%m-%d %H:%M:%S+00:00')
+            pub_date = str(pub_date)
+            # if it's long but includes date at start
+            if len(pub_date) >= 10:
+                return pub_date[:10]
+            return pub_date
+        except Exception:
+            return 'Unknown date'
+
+    def _format_links_block(self, paper: Dict, indent: str = "") -> str:
+        links = []
+        arxiv_id = paper.get('id')
+        if arxiv_id:
+            # For single-line link group we prefer Abstract; PDF optional; Search fallback rarely needed
+            links.append(f"🔍 [arXiv Abstract](https://arxiv.org/abs/{arxiv_id})")
+            links.append(f"📄 [PDF](https://arxiv.org/pdf/{arxiv_id}.pdf)")
+        doi = paper.get('doi')
+        if doi and str(doi).strip().lower() not in ('nan', 'none', ''):
+            links.append(f"🌐 [DOI](https://doi.org/{doi})")
+
+        if not links:
+            title = paper.get('title', '')
+            if title:
+                search_query = title.replace(' ', '+')[:100]
+                links.append(f"🔎 [Search on arXiv](https://arxiv.org/search/?query={search_query}&searchtype=title)")
+
+        if not links:
+            return ""
+        if indent:
+            return indent + " | ".join(links)
+        return "🔗 " + " | ".join(links)
+
+
+    def _author_match(self, pattern: str, authors: str) -> bool:
+        """
+        Accent- and punctuation-insensitive matching.
+        Supports partials: first/last, substring >=4 chars, or initial+last.
+        Authors string is assumed semicolon-separated or bracketed form.
+        """
+        import unicodedata, re
+
+        def norm(s: str) -> str:
+            s = unicodedata.normalize('NFKD', s)
+            s = "".join(ch for ch in s if not unicodedata.combining(ch))  # strip accents
+            s = s.lower()
+            s = re.sub(r'[^a-z0-9\s\-\.]', ' ', s)
+            s = re.sub(r'\s+', ' ', s).strip()
+            return s
+
+        # normalize user pattern
+        patt_norm = norm(pattern)
+        patt_tokens = patt_norm.split()
+
+        # split authors (handles both ; and , inside bracketed strings)
+        # first strip leading bracket forms like ["A"; "B"]
+        cleaned = authors.strip().strip('[]')
+        author_list = [a.strip().strip('"').strip("'") for a in re.split(r';|,', cleaned) if a.strip()]
+
+        for raw_author in author_list:
+            auth_norm = norm(raw_author)
+            auth_tokens = auth_norm.split()
+
+            # exact string match
+            if patt_norm == auth_norm:
+                return True
+
+            # all pattern tokens found in author tokens (order-insensitive)
+            if patt_tokens and all(any(ptok == atok for atok in auth_tokens) or ptok in auth_norm for ptok in patt_tokens):
+                return True
+
+            # last token match (surname) if pattern single token
+            if len(patt_tokens) == 1 and patt_tokens[0] and patt_tokens[0] in auth_tokens[-1:]:
+                return True
+
+            # substring len>=4
+            if len(patt_norm) >= 4 and patt_norm in auth_norm:
+                return True
+
+        return False
+
+
+    def _looks_like_author_name(self, text: str) -> bool:
+        """
+        Heuristic: short-ish, low stopword count, mostly name-like tokens.
+        Good enough to distinguish 'Sven-Ake Wegner' from long paper titles.
+        """
+        import re
+
+        t = text.strip().strip('"').strip("'")
+        if not t:
+            return False
+
+        tokens = re.split(r'\s+', t)
+        # Quick length check
+        if len(tokens) > 6:  # very long -> probably a title
+            return False
+
+        # Common title stopwords
+        stop = {"for","of","in","on","with","and","the","a","an","to","from","via","using","into","behavior","network","errors","algorithm"}
+        stop_hits = sum(1 for tok in tokens if tok.lower() in stop)
+        if stop_hits >= 2:
+            return False
+
+        # If most tokens start uppercase letter OR are initials, likely a name
+        name_like = 0
+        for tok in tokens:
+            if re.match(r"^[A-Z][\w\-'.]*$", tok) or re.match(r"^[A-Z]\.?$", tok):
+                name_like += 1
+        if name_like >= max(1, len(tokens) - 1):
+            return True
+
+        # If contains a hyphenated cap token (e.g., Sven-Ake) and token count <=4, likely name
+        if any('-' in tok for tok in tokens) and len(tokens) <= 4:
+            return True
+
+        # Fallback: short (<=3 tokens) & no stopwords -> call it a name
+        if len(tokens) <= 3 and stop_hits == 0:
+            return True
+
+        return False
+
 
 
     def _generate_recent_response(self, query: str, results: List[Dict]) -> str:
@@ -1339,6 +1579,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ArXiv Research Assistant")
     parser.add_argument("--openai-key", help="OpenAI API key")
     parser.add_argument("--model", default="all-MiniLM-L6-v2", help="Embedding model")
+    # parser.add_argument("--model", default="allenai/specter", help="Embedding model")
     parser.add_argument("--memory-limit", type=float, default=4.0, help="Memory limit in GB")
     parser.add_argument("--web", action="store_true", help="Launch web interface")
     

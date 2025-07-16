@@ -1,6 +1,6 @@
 """
-Enhanced module for generating semantic embeddings of arXiv articles using sentence transformers.
-Optimized for large datasets (3.5GB+) with memory-efficient processing and advanced caching.
+Enhanced module for generating semantic embeddings of arXiv articles with optimized chatbot support.
+Combines large-scale processing capabilities with real-time query functionality.
 """
 
 import pandas as pd
@@ -8,16 +8,16 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 import logging
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Generator
+from typing import List, Dict, Optional, Tuple, Union
 import pickle
 import gc
 import psutil
 import faiss
 import hashlib
 from multiprocessing import Pool, cpu_count
-from functools import partial
 import time
 import os
+from dataclasses import dataclass
 
 # Configure logging
 logging.basicConfig(
@@ -26,13 +26,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class EnhancedArxivEmbedder:
+@dataclass
+class SearchResult:
+    """Dataclass for standardized search results"""
+    article_id: str
+    score: float
+    content: Optional[str] = None
+    metadata: Optional[Dict] = None
+
+class ArxivEmbedder:
+    """
+    Dual-mode embedder supporting both:
+    1. Large-scale batch processing of arXiv datasets
+    2. Real-time query embedding and search for chatbot
+    
+    Key Features:
+    - Memory-efficient batch processing with smart caching
+    - FAISS-based similarity search
+    - Real-time query processing
+    - Context retrieval for chatbot responses
+    """
+    
     def __init__(self, 
                  model_name: str = "all-MiniLM-L6-v2",
                  cache_dir: str = "data/embeddings",
                  max_cache_size: int = 4):
         """
-        Enhanced embedder with memory optimization and advanced caching.
+        Initialize embedder with optimized settings for both batch and real-time use.
         
         Args:
             model_name: Name of the sentence transformer model
@@ -45,25 +65,31 @@ class EnhancedArxivEmbedder:
         self.max_cache_size = max_cache_size * (1024**3)  # Convert to bytes
         self.current_cache_size = 0
         self.embedding_cache = {}
+        
+        # FAISS index and metadata
+        self.index = None
+        self.article_ids = []
+        self.article_metadata = None
+        
+        # Load model with hardware optimization
         self.model = self._load_model()
         self.dimension = self.model.get_sentence_embedding_dimension()
         
-        # Memory monitoring
-        self.memory_monitor = False
-        self.max_memory_usage = 0.8  # Max memory usage before cleanup
+        # Memory management
+        self.memory_monitor = True
+        self.max_memory_usage = 0.8
         
-        logger.info(f"Initialized EnhancedArxivEmbedder with model: {model_name}")
+        logger.info(f"Initialized ArxivEmbedder with model: {model_name}")
 
     def _load_model(self) -> SentenceTransformer:
-        """Load model with memory optimization."""
+        """Load model with GPU/CPU optimization and eval mode"""
         try:
-            # Try to load with GPU first, fallback to CPU
             import torch
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
             logger.info(f"Loading model on {device.upper()}")
             model = SentenceTransformer(self.model_name, device=device)
             
-            # Set eval mode and disable gradient calculation
+            # Optimize model for inference
             model.eval()
             for param in model.parameters():
                 param.requires_grad = False
@@ -73,28 +99,16 @@ class EnhancedArxivEmbedder:
             logger.warning(f"Couldn't load model on GPU, falling back to CPU: {e}")
             return SentenceTransformer(self.model_name, device='cpu')
 
-    def _check_memory(self) -> bool:
-        """Check if memory usage is too high."""
-        mem = psutil.virtual_memory()
-        return mem.used / mem.total > self.max_memory_usage
-
-    def _cleanup_cache(self):
-        """Clean up cache when memory is low."""
-        logger.warning("Memory pressure high - cleaning embedding cache")
-        self.embedding_cache.clear()
-        gc.collect()
-        self.current_cache_size = 0
-
-    def _get_cache_key(self, text: str) -> str:
-        """Generate consistent cache key for text."""
-        return hashlib.sha256(text.encode()).hexdigest()
-
-    def generate_embeddings(self, 
-                          texts: List[str], 
-                          batch_size: int = 128,
-                          show_progress: bool = True) -> np.ndarray:
+    # --------------------------
+    # Core Embedding Functionality
+    # --------------------------
+    
+    def embed_texts(self, 
+                   texts: List[str], 
+                   batch_size: int = 128,
+                   show_progress: bool = True) -> np.ndarray:
         """
-        Generate embeddings with memory-efficient batch processing.
+        Generate embeddings for a list of texts with memory-efficient processing.
         
         Args:
             texts: List of texts to embed
@@ -210,21 +224,242 @@ class EnhancedArxivEmbedder:
             return self._parallel_embed(texts, ids, batch_size)
         
         # Single process embedding
-        embeddings = self.generate_embeddings(texts, batch_size=batch_size)
+        embeddings = self.embed_texts(texts, batch_size=batch_size)
         
         return {id_: embedding for id_, embedding in zip(ids, embeddings)}
+
+    # --------------------------
+    # Chatbot-Specific Methods
+    # --------------------------
+    
+    def embed_query(self, query: str) -> np.ndarray:
+        """
+        Embed a single user query for real-time search.
+        
+        Args:
+            query: User's natural language query
+            
+        Returns:
+            Embedding vector for the query
+        """
+        # Check cache first
+        cache_key = self._get_cache_key(query)
+        if cache_key in self.embedding_cache:
+            return self.embedding_cache[cache_key]
+            
+        # Generate embedding
+        embedding = self.model.encode(
+            [query],
+            show_progress_bar=False,
+            convert_to_numpy=True,
+            normalize_embeddings=True
+        )[0]
+        
+        # Cache result
+        self.embedding_cache[cache_key] = embedding
+        self.current_cache_size += embedding.nbytes
+        
+        return embedding
+
+    def search_similar(self, 
+                      query: str, 
+                      top_k: int = 5,
+                      return_content: bool = False) -> List[SearchResult]:
+        """
+        Find most similar articles to user query using FAISS index.
+        
+        Args:
+            query: User's search query
+            top_k: Number of results to return
+            return_content: Whether to include article content
+            
+        Returns:
+            List of SearchResult objects
+        """
+        if self.index is None:
+            raise ValueError("FAISS index not loaded. Call load_faiss_index() first.")
+            
+        # Embed the query
+        query_embedding = self.embed_query(query).reshape(1, -1).astype('float32')
+        faiss.normalize_L2(query_embedding)
+        
+        # Search the index
+        scores, indices = self.index.search(query_embedding, top_k)
+        
+        # Prepare results
+        results = []
+        for idx, score in zip(indices[0], scores[0]):
+            if idx < 0:  # FAISS returns -1 for invalid indices
+                continue
+                
+            article_id = self.article_ids[idx]
+            result = SearchResult(
+                article_id=article_id,
+                score=float(score),
+                metadata=self.article_metadata.get(article_id, {}) if self.article_metadata else None
+            )
+            
+            if return_content:
+                result.content = self._get_article_content(article_id)
+                
+            results.append(result)
+            
+        return results
+
+    def get_context(self, 
+                   query: str,
+                   top_k: int = 3,
+                   max_length: int = 2000) -> str:
+        """
+        Get relevant context for chatbot response generation.
+        
+        Args:
+            query: User's query
+            top_k: Number of articles to include
+            max_length: Maximum context length in characters
+            
+        Returns:
+            Formatted context string
+        """
+        results = self.search_similar(query, top_k=top_k, return_content=True)
+        
+        context_parts = []
+        for result in results:
+            if result.content:
+                context_parts.append(
+                    f"Article {result.article_id} (relevance: {result.score:.2f}):\n"
+                    f"{result.content[:1000]}..."
+                )
+        
+        full_context = "\n\n".join(context_parts)
+        return full_context[:max_length]
+
+    # --------------------------
+    # Index Management
+    # --------------------------
+    
+    def build_index(self, embeddings: Dict[str, np.ndarray]):
+        """
+        Build FAISS index from embeddings.
+        
+        Args:
+            embeddings: Dictionary of article_id to embedding
+        """
+        if not embeddings:
+            raise ValueError("No embeddings provided")
+            
+        logger.info("Building FAISS index")
+        
+        # Convert embeddings to numpy array
+        self.article_ids = list(embeddings.keys())
+        embedding_matrix = np.array([embeddings[id_] for id_ in self.article_ids]).astype('float32')
+        
+        # Create and populate index
+        self.index = faiss.IndexFlatIP(self.dimension)
+        faiss.normalize_L2(embedding_matrix)
+        self.index.add(embedding_matrix)
+        
+        logger.info(f"Built index with {len(self.article_ids)} embeddings")
+
+    def load_index(self, 
+                  index_path: str, 
+                  metadata_path: Optional[str] = None,
+                  content_dir: Optional[str] = None):
+        """
+        Load FAISS index and optional metadata.
+        
+        Args:
+            index_path: Path to FAISS index file
+            metadata_path: Path to metadata pickle file
+            content_dir: Directory containing article content files
+        """
+        index_path = Path(index_path)
+        if not index_path.exists():
+            raise FileNotFoundError(f"FAISS index not found: {index_path}")
+            
+        # Load index
+        self.index = faiss.read_index(str(index_path))
+        
+        # Load metadata if provided
+        if metadata_path:
+            metadata_path = Path(metadata_path)
+            if not metadata_path.exists():
+                raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
+                
+            with open(metadata_path, "rb") as f:
+                metadata = pickle.load(f)
+                self.article_ids = metadata["article_ids"]
+                self.article_metadata = metadata.get("metadata", {})
+        
+        # Set up content directory
+        if content_dir:
+            self.content_dir = Path(content_dir)
+        
+        logger.info(f"Loaded index with {len(self.article_ids)} embeddings")
+
+    def save_index(self, 
+                  output_dir: str,
+                  metadata: Optional[Dict] = None):
+        """
+        Save FAISS index and metadata to disk.
+        
+        Args:
+            output_dir: Directory to save files
+            metadata: Additional metadata to store
+        """
+        if self.index is None:
+            raise ValueError("No index to save")
+            
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Save index
+        index_path = output_path / f"faiss_index_{self.model_name}.index"
+        faiss.write_index(self.index, str(index_path))
+        
+        # Save metadata
+        metadata_path = output_path / f"faiss_metadata_{self.model_name}.pkl"
+        metadata_data = {
+            "article_ids": self.article_ids,
+            "metadata": metadata or {}
+        }
+        with open(metadata_path, "wb") as f:
+            pickle.dump(metadata_data, f)
+            
+        logger.info(f"Saved index to {index_path}")
+
+    # --------------------------
+    # Utility Methods
+    # --------------------------
+    
+    def _get_cache_key(self, text: str) -> str:
+        """Generate consistent cache key for text."""
+        return hashlib.sha256(text.encode()).hexdigest()
+
+    def _check_memory(self) -> bool:
+        """Check if memory usage is too high."""
+        if not self.memory_monitor:
+            return False
+            
+        mem = psutil.virtual_memory()
+        return mem.used / mem.total > self.max_memory_usage
+
+    def _cleanup_cache(self):
+        """Clean up cache when memory is low."""
+        logger.warning("Memory pressure high - cleaning embedding cache")
+        self.embedding_cache.clear()
+        gc.collect()
+        self.current_cache_size = 0
 
     def _parallel_embed(self, 
                        texts: List[str], 
                        ids: List[str],
                        batch_size: int) -> Dict[str, np.ndarray]:
-        """
-        Parallel embedding generation for large datasets.
-        """
+        """Parallel embedding generation for large datasets."""
         logger.info("Using parallel processing for large dataset")
         
         # Split data into chunks for parallel processing
-        num_workers = min(cpu_count(), 8)  # Don't use all cores to avoid memory issues
+        num_workers = min(cpu_count(), 8)
         chunk_size = len(texts) // num_workers
         chunks = [
             (texts[i:i + chunk_size], ids[i:i + chunk_size])
@@ -250,136 +485,20 @@ class EnhancedArxivEmbedder:
                     texts: List[str], 
                     ids: List[str],
                     batch_size: int) -> Dict[str, np.ndarray]:
-        """
-        Worker function for parallel embedding.
-        """
-        embeddings = self.generate_embeddings(texts, batch_size=batch_size, show_progress=False)
+        """Worker function for parallel embedding."""
+        embeddings = self.embed_texts(texts, batch_size=batch_size, show_progress=False)
         return {id_: embedding for id_, embedding in zip(ids, embeddings)}
 
-    def save_embeddings(self, 
-                       embeddings: Dict[str, np.ndarray], 
-                       output_dir: str,
-                       save_index: bool = True):
-        """
-        Save embeddings to disk with optimized storage format.
-        
-        Args:
-            embeddings: Dictionary of embeddings
-            output_dir: Directory to save embeddings
-            save_index: Whether to also save FAISS index
-        """
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        
-        # Save embeddings in efficient format
-        emb_path = output_path / f"embeddings_{self.model_name}.pkl"
-        with open(emb_path, "wb") as f:
-            pickle.dump(embeddings, f, protocol=pickle.HIGHEST_PROTOCOL)
+    def _get_article_content(self, article_id: str) -> Optional[str]:
+        """Retrieve article content from disk if available."""
+        if not hasattr(self, 'content_dir'):
+            return None
             
-        logger.info(f"Saved embeddings to {emb_path}")
-        
-        # Save FAISS index if requested
-        if save_index:
-            self.save_faiss_index(embeddings, output_path)
-
-    def save_faiss_index(self, 
-                        embeddings: Dict[str, np.ndarray], 
-                        output_dir: Path):
-        """
-        Build and save optimized FAISS index for fast similarity search.
-        
-        Args:
-            embeddings: Dictionary of embeddings
-            output_dir: Directory to save index
-        """
-        if not embeddings:
-            raise ValueError("No embeddings provided")
-            
-        logger.info("Building optimized FAISS index")
-        
-        # Convert embeddings to numpy array
-        ids = list(embeddings.keys())
-        embedding_matrix = np.array([embeddings[id_] for id_ in ids]).astype('float32')
-        
-        # Create optimized index
-        index = faiss.IndexFlatIP(self.dimension)
-        
-        # Normalize vectors for cosine similarity
-        faiss.normalize_L2(embedding_matrix)
-        
-        # Add vectors to index
-        index.add(embedding_matrix)
-        
-        # Save index
-        index_path = output_dir / f"faiss_index_{self.model_name}.index"
-        faiss.write_index(index, str(index_path))
-        
-        # Save metadata
-        metadata_path = output_dir / f"faiss_metadata_{self.model_name}.pkl"
-        with open(metadata_path, "wb") as f:
-            pickle.dump({"article_ids": ids}, f)
-            
-        logger.info(f"Saved FAISS index to {index_path}")
-
-    def load_embeddings(self, input_path: str) -> Dict[str, np.ndarray]:
-        """
-        Load embeddings from disk with memory mapping for large files.
-        
-        Args:
-            input_path: Path to embeddings file
-            
-        Returns:
-            Dictionary of embeddings
-        """
-        input_path = Path(input_path)
-        if not input_path.exists():
-            raise FileNotFoundError(f"Embeddings file not found: {input_path}")
-            
-        # Check file size
-        file_size = input_path.stat().st_size / (1024**3)  # GB
-        
-        if file_size > 2:  # For very large files, use memory mapping
-            logger.info(f"Loading large embeddings file ({file_size:.2f} GB) with memory mapping")
-            with open(input_path, "rb") as f:
-                embeddings = pickle.load(f, buffers=None)  # Disable buffer for mmap
-        else:
-            with open(input_path, "rb") as f:
-                embeddings = pickle.load(f)
-                
-        logger.info(f"Loaded embeddings from {input_path}")
-        return embeddings
-
-    def load_faiss_index(self, 
-                        index_path: str, 
-                        metadata_path: str) -> Tuple[faiss.Index, List[str]]:
-        """
-        Load FAISS index and metadata.
-        
-        Args:
-            index_path: Path to FAISS index file
-            metadata_path: Path to metadata file
-            
-        Returns:
-            Tuple of (FAISS index, article IDs)
-        """
-        index_path = Path(index_path)
-        metadata_path = Path(metadata_path)
-        
-        if not index_path.exists():
-            raise FileNotFoundError(f"FAISS index not found: {index_path}")
-        if not metadata_path.exists():
-            raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
-            
-        # Load index
-        index = faiss.read_index(str(index_path))
-        
-        # Load metadata
-        with open(metadata_path, "rb") as f:
-            metadata = pickle.load(f)
-            article_ids = metadata["article_ids"]
-            
-        logger.info(f"Loaded FAISS index with {len(article_ids)} embeddings")
-        return index, article_ids
+        content_path = self.content_dir / f"{article_id}.txt"
+        if content_path.exists():
+            with open(content_path, "r", encoding="utf-8") as f:
+                return f.read()
+        return None
 
     def clear_cache(self):
         """Clear all cached embeddings and free memory."""
@@ -388,26 +507,138 @@ class EnhancedArxivEmbedder:
         self.current_cache_size = 0
         logger.info("Cleared embedding cache")
 
+    def generate_embeddings(self, texts: List[str]) -> List[np.ndarray]:
+        """Alias for embed_texts that matches the expected interface"""
+        return self.embed_texts(texts)
+
+# --------------------------
+# Lightweight Chatbot Embedder
+# --------------------------
+
+class ChatbotEmbedder:
+    """
+    Lightweight version optimized for real-time chatbot queries.
+    Uses precomputed embeddings and FAISS index.
+    """
+    
+    def __init__(self, 
+                 index_path: str,
+                 metadata_path: str,
+                 model_name: str = "all-MiniLM-L6-v2",
+                 max_cache_size: int = 1):
+        """
+        Initialize with precomputed index.
+        
+        Args:
+            index_path: Path to FAISS index file
+            metadata_path: Path to metadata file
+            model_name: Name of sentence transformer model
+            max_cache_size: Maximum cache size in GB
+        """
+        # Load model
+        self.model = SentenceTransformer(model_name)
+        self.dimension = self.model.get_sentence_embedding_dimension()
+        
+        # Load index and metadata
+        self.index = faiss.read_index(str(index_path))
+        with open(metadata_path, "rb") as f:
+            metadata = pickle.load(f)
+            self.article_ids = metadata["article_ids"]
+            self.article_metadata = metadata.get("metadata", {})
+        
+        # Initialize cache
+        self.embedding_cache = {}
+        self.max_cache_size = max_cache_size * (1024**3)
+        self.current_cache_size = 0
+        
+        logger.info(f"Initialized ChatbotEmbedder with {len(self.article_ids)} articles")
+
+    def embed_query(self, query: str) -> np.ndarray:
+        """Embed a user query for search."""
+        cache_key = hashlib.sha256(query.encode()).hexdigest()
+        if cache_key in self.embedding_cache:
+            return self.embedding_cache[cache_key]
+            
+        embedding = self.model.encode(
+            [query],
+            show_progress_bar=False,
+            convert_to_numpy=True,
+            normalize_embeddings=True
+        )[0]
+        
+        # Cache with size check
+        self.embedding_cache[cache_key] = embedding
+        self.current_cache_size += embedding.nbytes
+        
+        if self.current_cache_size > self.max_cache_size:
+            self.embedding_cache.clear()
+            self.current_cache_size = 0
+            
+        return embedding
+
+    def search(self, query: str, top_k: int = 5) -> List[SearchResult]:
+        """Search for similar articles."""
+        query_embedding = self.embed_query(query).reshape(1, -1).astype('float32')
+        faiss.normalize_L2(query_embedding)
+        
+        scores, indices = self.index.search(query_embedding, top_k)
+        
+        results = []
+        for idx, score in zip(indices[0], scores[0]):
+            if idx < 0:
+                continue
+                
+            results.append(SearchResult(
+                article_id=self.article_ids[idx],
+                score=float(score),
+                metadata=self.article_metadata.get(self.article_ids[idx], {})
+            ))
+            
+        return results
+
+    def get_context(self, query: str, top_k: int = 3) -> str:
+        """Get context for LLM response generation."""
+        results = self.search(query, top_k=top_k)
+        context = []
+        
+        for result in results:
+            context.append(
+                f"Article {result.article_id} (relevance: {result.score:.2f}):\n"
+                f"{self.article_metadata.get(result.article_id, {}).get('summary', 'No content available')}"
+            )
+            
+        return "\n\n".join(context)
+
 if __name__ == "__main__":
-    # Example usage
+    # Example usage for batch processing
+    batch_embedder = ArxivEmbedder()
+    
+    # Load and process data
     from data_loader import ArxivDataLoader
-    
-    # Initialize embedder with large cache
-    embedder = EnhancedArxivEmbedder(
-        model_name="all-MiniLM-L6-v2",
-        cache_dir="data/embeddings",
-        max_cache_size=8  # GB
-    )
-    
-    # Load sample data
     loader = ArxivDataLoader("data/processed/articles_clean.csv")
-    df = loader.load_data(nrows=10000)  # Adjust based on available memory
+    df = loader.load_data(nrows=10000)
     
     # Generate embeddings
-    embeddings = embedder.embed_articles(df, parallel=True)
+    embeddings = batch_embedder.embed_articles(df)
     
-    # Save embeddings and index
-    embedder.save_embeddings(embeddings, "data/embeddings/")
+    # Build and save index
+    batch_embedder.build_index(embeddings)
+    batch_embedder.save_index("data/embeddings/")
     
-    # Memory cleanup
-    embedder.clear_cache()
+    # Example usage for chatbot
+    chatbot_embedder = ChatbotEmbedder(
+        index_path="data/embeddings/faiss_index_all-MiniLM-L6-v2.index",
+        metadata_path="data/embeddings/faiss_metadata_all-MiniLM-L6-v2.pkl"
+    )
+    
+    # Process user query
+    query = "machine learning applications in healthcare"
+    results = chatbot_embedder.search(query)
+    context = chatbot_embedder.get_context(query)
+    
+    print(f"Found {len(results)} relevant articles:")
+    for result in results:
+        print(f"- {result.article_id} (score: {result.score:.2f})")
+    
+    print("\nContext for LLM:")
+    print(context[:500] + "...")

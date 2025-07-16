@@ -210,7 +210,7 @@ class OptimizedArxivSearchEngine:
         with open(metadata_path, "rb") as f:
             metadata = pickle.load(f)
             self.article_ids = metadata["article_ids"]
-            self.article_data = metadata["article_data"]
+            self.article_data = metadata.get("article_data", {})
             
         self.dimension = self.index.d
         
@@ -247,6 +247,10 @@ class OptimizedArxivSearchEngine:
         if self.secondary_index and secondary_index_path:
             faiss.write_index(self.secondary_index, secondary_index_path)
         
+        # Ensure article_data exists
+        if not hasattr(self, 'article_data') or not self.article_data:
+            raise ValueError("Article data not loaded. Call load_article_data() first.")
+    
         # Save article metadata
         metadata = {
             "article_ids": self.article_ids,
@@ -292,7 +296,7 @@ class OptimizedArxivSearchEngine:
             Query embedding
         """
         # Generate new embedding
-        embedding = embedder.generate_embeddings([query_text])[0]
+        embedding = embedder.embed_query(query_text)
         return embedding
 
     def search(self, 
