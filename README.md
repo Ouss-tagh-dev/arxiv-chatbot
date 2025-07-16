@@ -39,11 +39,10 @@ source arxiv_env/bin/activate
 arxiv_env\Scripts\activate 
 
 <!-- py src/data_cleaning.py --input data/raw/articles.csv --output data/processed/articles_clean.csv -->
+python src\data_cleaning.py --input data/raw/articles.csv --output data/processed/articles_clean.csv --deep-clean --use-spacy --remove-stopwords --lemmatize --sample-size 20000
 
-python src\data_cleaning.py --input data/raw/articles.csv --output data/processed/articles_clean.csv --deep-clean --use-spacy --remove-stopwords --lemmatize
-
-<!-- py generate_index.py --data data/processed/articles_clean.csv --output data/embeddings/ --text_field summary -->
-py generate_index.py --data data/processed/articles_clean.csv --output data/embeddings/ --text_field summary --quick --nrows 20000
+py generate_index.py --data data/processed/articles_clean.csv --output data/embeddings/ --text_field summary
+<!-- py generate_index.py --data data/processed/articles_clean.csv --output data/embeddings/ --text_field summary --quick --nrows 20000 -->
 
 streamlit run src/chatbot.py
 streamlit run src/chatbot.py -- --web
