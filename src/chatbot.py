@@ -258,6 +258,383 @@ class ArxivChatbot:
 
 
 
+    # def web_interface(self):
+    #     """Run the chatbot with a Streamlit web interface."""
+    #     self._is_web_interface = True
+    #     self._initialize_components()
+        
+    #     # Configure page
+    #     st.set_page_config(
+    #         page_title="arXiv Research Assistant",
+    #         page_icon="📚",
+    #         layout="wide",
+    #         initial_sidebar_state="expanded"
+    #     )
+
+    #     # Add custom CSS
+    #     st.markdown("""
+    #     <style>
+    #         .main-header {
+    #             font-size: 2.5rem;
+    #             font-weight: bold;
+    #             color: #1f77b4;
+    #             text-align: center;
+    #             margin-bottom: 1rem;
+    #         }
+    #         .chat-container {
+    #             max-height: 60vh;
+    #             overflow-y: auto;
+    #             padding-right: 1rem;
+    #         }
+    #         .chat-message {
+    #             padding: 1rem;
+    #             border-radius: 0.75rem;
+    #             margin: 0.75rem 0;
+    #             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    #         }
+    #         .user-message {
+    #             background-color: #e3f2fd;
+    #             border-left: 4px solid #2196f3;
+    #             margin-left: 15%;
+    #         }
+    #         .bot-message {
+    #             background-color: #f5f5f5;
+    #             border-left: 4px solid #757575;
+    #             margin-right: 15%;
+    #         }
+    #         .result-card {
+    #             background-color: #f8f9fa;
+    #             border-radius: 0.75rem;
+    #             box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    #             padding: 1.25rem;
+    #             margin-bottom: 1.25rem;
+    #         }
+    #         .database-info {
+    #             background-color: #f8f9fa;
+    #             border-radius: 0.75rem;
+    #             padding: 1rem;
+    #             margin-bottom: 1.5rem;
+    #         }
+    #     </style>
+    #     """, unsafe_allow_html=True)
+
+    #     # Initialize session state
+    #     if "messages" not in st.session_state:
+    #         st.session_state.messages = []
+    #     if "search_results" not in st.session_state:
+    #         st.session_state.search_results = []
+    #     if "query_stats" not in st.session_state:
+    #         st.session_state.query_stats = {}
+        
+    #     # Initialize chat history
+    #     if "chat_history" not in st.session_state:
+    #         st.session_state.chat_history = {}
+    #         st.session_state.current_chat_id = None
+    #         st.session_state.current_chat_name = "New Chat"
+
+    #     # Main header
+    #     st.markdown('<h1 class="main-header">arXiv Research Assistant</h1>', unsafe_allow_html=True)
+
+    #     # --- SIDEBAR ---
+    #     with st.sidebar:
+    #         st.markdown("## 💬 Chat History")
+            
+    #         # Button to create new chat
+    #         if st.button("➕ New Chat"):
+    #             new_chat_id = str(int(time.time()))
+    #             st.session_state.chat_history[new_chat_id] = {
+    #                 "name": f"Chat {len(st.session_state.chat_history) + 1}",
+    #                 "messages": []
+    #             }
+    #             st.session_state.current_chat_id = new_chat_id
+    #             st.session_state.current_chat_name = st.session_state.chat_history[new_chat_id]["name"]
+    #             st.session_state.messages = []
+            
+    #         # Display chat history list
+    #         st.markdown("### Your Chats")
+    #         for chat_id, chat_data in st.session_state.chat_history.items():
+    #             # Display chat name with button to load it
+    #             if st.button(
+    #                 f"{'▶️ ' if chat_id == st.session_state.current_chat_id else ''}{chat_data['name']}",
+    #                 key=f"chat_{chat_id}",
+    #                 help=f"Last message: {chat_data['messages'][-1]['content'][:30] + '...' if chat_data['messages'] else 'Empty chat'}"
+    #             ):
+    #                 st.session_state.current_chat_id = chat_id
+    #                 st.session_state.current_chat_name = chat_data["name"]
+    #                 st.session_state.messages = chat_data["messages"]
+            
+    #         # Save/load functionality
+    #         col1, col2 = st.columns(2)
+    #         with col1:
+    #             if st.button("💾 Save Chats"):
+    #                 with open("chat_history.json", "w") as f:
+    #                     json.dump(st.session_state.chat_history, f)
+    #                 st.success("Chats saved!")
+    #         with col2:
+    #             if st.button("📂 Load Chats"):
+    #                 try:
+    #                     with open("chat_history.json", "r") as f:
+    #                         st.session_state.chat_history = json.load(f)
+    #                     st.success("Chats loaded!")
+    #                 except FileNotFoundError:
+    #                     st.error("No chat history found")
+
+    #         # Existing search parameters
+    #         st.markdown("## 🔍 Search Parameters")
+    #         num_results = st.slider(
+    #             "Number of results",
+    #             min_value=1,
+    #             max_value=MAX_RESULTS,
+    #             value=10,
+    #             help="Maximum number of articles to return"
+    #         )
+            
+    #         # Filters
+    #         st.markdown("### Filters")
+    #         author_filter = st.text_input(
+    #             "Author name contains",
+    #             placeholder="e.g., Smith, Bengio, etc.",
+    #             help="Filter by author name (partial match)"
+    #         )
+            
+    #         # Year filter
+    #         if hasattr(self, 'df') and 'published_date' in self.df.columns:
+    #             try:
+    #                 self.df['published_date'] = pd.to_datetime(self.df['published_date'], errors='coerce')
+    #                 years = sorted(self.df['published_date'].dt.year.dropna().unique(), reverse=True)
+    #                 year_filter = st.selectbox(
+    #                     "Publication year",
+    #                     ["All years"] + [str(int(y)) for y in years],
+    #                     index=0
+    #                 )
+    #             except:
+    #                 year_filter = "All years"
+    #         else:
+    #             year_filter = "All years"
+            
+    #         # Category filter
+    #         if hasattr(self, 'df') and 'primary_category' in self.df.columns:
+    #             categories = sorted([
+    #                 c for c in self.df["primary_category"].dropna().unique() 
+    #                 if c and c != 'Unknown'
+    #             ])
+    #             selected_categories = st.multiselect(
+    #                 "Categories",
+    #                 categories,
+    #                 default=categories[:3] if len(categories) >= 3 else categories,
+    #                 help="Select one or more categories"
+    #             )
+    #         else:
+    #             selected_categories = []
+            
+    #         # Advanced options
+    #         with st.expander("Advanced Options"):
+    #             similarity_threshold = st.slider(
+    #                 "Minimum similarity",
+    #                 min_value=0.0,
+    #                 max_value=1.0,
+    #                 value=0.3,
+    #                 step=0.05,
+    #                 help="Filter out low similarity results"
+    #             )
+                
+    #             rerank_method = st.selectbox(
+    #                 "Rerank method",
+    #                 ["Relevance", "Diversity", "Recent first"],
+    #                 index=0
+    #             )
+            
+    #         # Display system info
+    #         mem = psutil.virtual_memory()
+    #         st.markdown(f"""
+    #         <div class='database-info'>
+    #         <strong>🖥️ System Resources:</strong><br>
+    #         Memory: {mem.used / (1024**3):.1f} GB / {mem.total / (1024**3):.1f} GB ({mem.percent}%)<br>
+    #         CPU: {psutil.cpu_percent()}%<br>
+    #         Threads: {psutil.Process().num_threads()}
+    #         </div>
+    #         """, unsafe_allow_html=True)
+
+    #     # Initialize current chat if none exists
+    #     if st.session_state.current_chat_id is None:
+    #         new_chat_id = str(int(time.time()))
+    #         st.session_state.chat_history[new_chat_id] = {
+    #             "name": "Chat 1",
+    #             "messages": []
+    #         }
+    #         st.session_state.current_chat_id = new_chat_id
+    #         st.session_state.current_chat_name = st.session_state.chat_history[new_chat_id]["name"]
+
+    #     # Display current chat name
+    #     st.markdown(f"### {st.session_state.current_chat_name}")
+
+    #     # --- MAIN INTERFACE ---
+    #     tab_chat, tab_results = st.tabs(["Chat", "Results"])
+
+    #     with tab_chat:
+    #         # Display chat history
+    #         with st.container():
+    #             st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+    #             for message in st.session_state.messages:
+    #                 with st.chat_message(message["role"]):
+    #                     st.markdown(message["content"])
+    #             st.markdown('</div>', unsafe_allow_html=True)
+            
+    #         # Chat input
+    #         if prompt := st.chat_input("Ask about arXiv research..."):
+    #             # Add user message to chat
+    #             st.session_state.messages.append({"role": "user", "content": prompt})
+    #             with st.chat_message("user"):
+    #                 st.markdown(prompt)
+                
+    #             try:
+    #                 # Prepare enhanced query with filters
+    #                 enhanced_query = prompt
+                    
+    #                 # Apply filters
+    #                 if year_filter != "All years":
+    #                     enhanced_query += f" year:{year_filter}"
+    #                 if author_filter.strip():
+    #                     enhanced_query += f" author:{author_filter.strip()}"
+    #                 if selected_categories:
+    #                     enhanced_query += " " + " ".join(f"category:{cat}" for cat in selected_categories)
+                    
+    #                 # Perform search with progress bar
+    #                 with st.spinner("Searching arXiv database..."):
+    #                     search_progress = st.progress(0)
+                        
+    #                     # Track query metrics
+    #                     start_time = time.time()
+    #                     results = self.search_articles(
+    #                         enhanced_query, 
+    #                         k=num_results * 3  # Get more results for filtering
+    #                     )
+    #                     search_time = time.time() - start_time
+                        
+    #                     # Apply post-search filters
+    #                     filtered_results = [
+    #                         r for r in results 
+    #                         if r.get('similarity', 0) >= similarity_threshold
+    #                     ]
+                        
+    #                     # Apply reranking
+    #                     if rerank_method == "Recent first" and 'published_date' in filtered_results[0]:
+    #                         filtered_results.sort(
+    #                             key=lambda x: x.get('published_date', ''),
+    #                             reverse=True
+    #                         )
+    #                     elif rerank_method == "Diversity":
+    #                         # Simple diversity - take top from each category
+    #                         categories = {}
+    #                         for res in filtered_results:
+    #                             cat = res.get('primary_category', 'other')
+    #                             if cat not in categories or res['similarity'] > categories[cat]['similarity']:
+    #                                 categories[cat] = res
+    #                         filtered_results = list(categories.values())
+                        
+    #                     # Limit to requested number of results
+    #                     filtered_results = filtered_results[:num_results]
+                        
+    #                     search_progress.progress(100)
+                    
+    #                 # Generate response
+    #                 with st.spinner("Generating response..."):
+    #                     response = self.generate_response(prompt, filtered_results)
+    #                     st.session_state.messages.append({"role": "assistant", "content": response})
+    #                     with st.chat_message("assistant"):
+    #                         st.markdown(response)
+                    
+    #                 # Store results and stats
+    #                 st.session_state.search_results = filtered_results
+    #                 st.session_state.query_stats = {
+    #                     "query": prompt,
+    #                     "time": search_time,
+    #                     "total_results": len(results),
+    #                     "filtered_results": len(filtered_results),
+    #                     "similarity_threshold": similarity_threshold
+    #                 }
+                    
+    #                 # Update chat history
+    #                 if "messages" in st.session_state and st.session_state.current_chat_id:
+    #                     st.session_state.chat_history[st.session_state.current_chat_id]["messages"] = st.session_state.messages
+                    
+    #             except Exception as e:
+    #                 error_msg = f"Error processing query: {str(e)}"
+    #                 st.session_state.messages.append({"role": "assistant", "content": error_msg})
+    #                 with st.chat_message("assistant"):
+    #                     st.markdown(error_msg)
+    #                 logger.error(f"Search error: {str(e)}")
+
+    #     with tab_results:
+    #         if st.session_state.search_results:
+    #             st.markdown(f"### 📊 Found {len(st.session_state.search_results)} results")
+                
+    #             # Display stats
+    #             if st.session_state.query_stats:
+    #                 stats = st.session_state.query_stats
+    #                 st.markdown(f"""
+    #                 Query: "{stats['query']}"<br>
+    #                 Search time: {stats['time']:.2f}s | 
+    #                 Initial results: {stats['total_results']} | 
+    #                 After filtering: {stats['filtered_results']}
+    #                 """, unsafe_allow_html=True)
+                
+    #             # Display results
+    #             for i, result in enumerate(st.session_state.search_results, 1):
+    #                 with st.expander(f"{i}. {result.get('title', 'No Title')[:120]}...", expanded=False):
+    #                     st.markdown('<div class="result-card">', unsafe_allow_html=True)
+                        
+    #                     # Header with similarity score
+    #                     col1, col2 = st.columns([4, 1])
+    #                     with col1:
+    #                         st.markdown(f"**{result.get('title', 'No Title')}**")
+    #                     with col2:
+    #                         st.markdown(f"`Similarity: {result.get('similarity', 0):.3f}`")
+                        
+    #                     # Metadata row
+    #                     meta_col1, meta_col2, meta_col3 = st.columns([2, 2, 1])
+                        
+    #                     with meta_col1:
+    #                         authors = result.get('author', 'Unknown')
+    #                         if len(authors) > 60:
+    #                             authors = authors[:57] + "..."
+    #                         st.markdown(f"**Authors**: {authors}")
+                        
+    #                     with meta_col2:
+    #                         pub_date = result.get('published_date', 'Unknown')
+    #                         if isinstance(pub_date, str):
+    #                             try:
+    #                                 pub_date = pd.to_datetime(pub_date).strftime('%Y-%m-%d')
+    #                             except:
+    #                                 pass
+    #                         st.markdown(f"**Published**: {pub_date}")
+                        
+    #                     with meta_col3:
+    #                         cat = result.get('primary_category', result.get('category', ''))
+    #                         st.markdown(f"**Category**: {cat[:20]}" if cat else "**Category**: N/A")
+                        
+    #                     # Summary
+    #                     summary = result.get('summary', 'No summary available')
+    #                     st.markdown(f"**Summary**: {summary}")
+                        
+    #                     # Links
+    #                     link_col1, link_col2 = st.columns(2)
+    #                     with link_col1:
+    #                         arxiv_id = result.get('id', '')
+    #                         if arxiv_id:
+    #                             st.markdown(f"[📄 arXiv Paper](https://arxiv.org/abs/{arxiv_id})")
+                        
+    #                     with link_col2:
+    #                         doi = result.get('doi', '')
+    #                         if doi and pd.notna(doi):
+    #                             st.markdown(f"[🌐 DOI](https://doi.org/{doi})")
+                        
+    #                     st.markdown('</div>', unsafe_allow_html=True)
+    #         else:
+    #             st.info("No results to display. Perform a search in the Chat tab.")
+
+
+
     def web_interface(self):
         """Run the chatbot with a Streamlit web interface."""
         self._is_web_interface = True
@@ -285,6 +662,7 @@ class ArxivChatbot:
                 max-height: 60vh;
                 overflow-y: auto;
                 padding-right: 1rem;
+                margin-bottom: 1rem;
             }
             .chat-message {
                 padding: 1rem;
@@ -315,6 +693,30 @@ class ArxivChatbot:
                 padding: 1rem;
                 margin-bottom: 1.5rem;
             }
+            /* Styles for charts */
+            .stPlot {
+                border-radius: 0.5rem;
+                padding: 0.5rem;
+                background-color: white;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                margin-bottom: 1rem;
+            }
+            /* Ensure chat input stays visible */
+            .stChatInput {
+                position: sticky;
+                bottom: 0;
+                background: white;
+                padding: 1rem 0;
+                z-index: 100;
+            }
+            /* Better tabs styling */
+            .stTabs [data-baseweb="tab-list"] {
+                gap: 0.5rem;
+            }
+            .stTabs [data-baseweb="tab"] {
+                padding: 0.5rem 1rem;
+                border-radius: 0.5rem 0.5rem 0 0;
+            }
         </style>
         """, unsafe_allow_html=True)
 
@@ -340,7 +742,7 @@ class ArxivChatbot:
             st.markdown("## 💬 Chat History")
             
             # Button to create new chat
-            if st.button("➕ New Chat"):
+            if st.button("➕ New Chat", use_container_width=True):
                 new_chat_id = str(int(time.time()))
                 st.session_state.chat_history[new_chat_id] = {
                     "name": f"Chat {len(st.session_state.chat_history) + 1}",
@@ -349,6 +751,8 @@ class ArxivChatbot:
                 st.session_state.current_chat_id = new_chat_id
                 st.session_state.current_chat_name = st.session_state.chat_history[new_chat_id]["name"]
                 st.session_state.messages = []
+                st.session_state.search_results = []
+                st.rerun()
             
             # Display chat history list
             st.markdown("### Your Chats")
@@ -357,21 +761,24 @@ class ArxivChatbot:
                 if st.button(
                     f"{'▶️ ' if chat_id == st.session_state.current_chat_id else ''}{chat_data['name']}",
                     key=f"chat_{chat_id}",
-                    help=f"Last message: {chat_data['messages'][-1]['content'][:30] + '...' if chat_data['messages'] else 'Empty chat'}"
+                    help=f"Last message: {chat_data['messages'][-1]['content'][:30] + '...' if chat_data['messages'] else 'Empty chat'}",
+                    use_container_width=True
                 ):
                     st.session_state.current_chat_id = chat_id
                     st.session_state.current_chat_name = chat_data["name"]
                     st.session_state.messages = chat_data["messages"]
+                    st.session_state.search_results = []
+                    st.rerun()
             
             # Save/load functionality
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("💾 Save Chats"):
+                if st.button("💾 Save Chats", use_container_width=True):
                     with open("chat_history.json", "w") as f:
                         json.dump(st.session_state.chat_history, f)
                     st.success("Chats saved!")
             with col2:
-                if st.button("📂 Load Chats"):
+                if st.button("📂 Load Chats", use_container_width=True):
                     try:
                         with open("chat_history.json", "r") as f:
                             st.session_state.chat_history = json.load(f)
@@ -379,7 +786,7 @@ class ArxivChatbot:
                     except FileNotFoundError:
                         st.error("No chat history found")
 
-            # Existing search parameters
+            # Search parameters
             st.markdown("## 🔍 Search Parameters")
             num_results = st.slider(
                 "Number of results",
@@ -472,20 +879,22 @@ class ArxivChatbot:
         tab_chat, tab_results = st.tabs(["Chat", "Results"])
 
         with tab_chat:
-            # Display chat history
-            with st.container():
+            # Display chat history in a container
+            chat_container = st.container()
+            with chat_container:
                 st.markdown('<div class="chat-container">', unsafe_allow_html=True)
                 for message in st.session_state.messages:
                     with st.chat_message(message["role"]):
                         st.markdown(message["content"])
                 st.markdown('</div>', unsafe_allow_html=True)
             
-            # Chat input
+            # Chat input - outside the container to stay visible
             if prompt := st.chat_input("Ask about arXiv research..."):
                 # Add user message to chat
                 st.session_state.messages.append({"role": "user", "content": prompt})
-                with st.chat_message("user"):
-                    st.markdown(prompt)
+                with chat_container:
+                    with st.chat_message("user"):
+                        st.markdown(prompt)
                 
                 try:
                     # Prepare enhanced query with filters
@@ -500,6 +909,17 @@ class ArxivChatbot:
                         enhanced_query += " " + " ".join(f"category:{cat}" for cat in selected_categories)
                     
                     # Perform search with progress bar
+                    # with st.spinner("Searching arXiv database..."):
+                    #     search_progress = st.progress(0)
+                        
+                    #     # Track query metrics
+                    #     start_time = time.time()
+                    #     results = self.search_articles(
+                    #         enhanced_query, 
+                    #         k=num_results * 3  # Get more results for filtering
+                    #     )
+                    #     search_time = time.time() - start_time
+
                     with st.spinner("Searching arXiv database..."):
                         search_progress = st.progress(0)
                         
@@ -507,7 +927,8 @@ class ArxivChatbot:
                         start_time = time.time()
                         results = self.search_articles(
                             enhanced_query, 
-                            k=num_results * 3  # Get more results for filtering
+                            k=num_results * 3,  # Get more results for filtering
+                            author_filter=author_filter.strip() if author_filter.strip() else None
                         )
                         search_time = time.time() - start_time
                         
@@ -541,8 +962,9 @@ class ArxivChatbot:
                     with st.spinner("Generating response..."):
                         response = self.generate_response(prompt, filtered_results)
                         st.session_state.messages.append({"role": "assistant", "content": response})
-                        with st.chat_message("assistant"):
-                            st.markdown(response)
+                        with chat_container:
+                            with st.chat_message("assistant"):
+                                st.markdown(response)
                     
                     # Store results and stats
                     st.session_state.search_results = filtered_results
@@ -555,14 +977,15 @@ class ArxivChatbot:
                     }
                     
                     # Update chat history
-                    if "messages" in st.session_state and st.session_state.current_chat_id:
+                    if st.session_state.current_chat_id:
                         st.session_state.chat_history[st.session_state.current_chat_id]["messages"] = st.session_state.messages
                     
                 except Exception as e:
                     error_msg = f"Error processing query: {str(e)}"
                     st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                    with st.chat_message("assistant"):
-                        st.markdown(error_msg)
+                    with chat_container:
+                        with st.chat_message("assistant"):
+                            st.markdown(error_msg)
                     logger.error(f"Search error: {str(e)}")
 
         with tab_results:
@@ -632,7 +1055,6 @@ class ArxivChatbot:
                         st.markdown('</div>', unsafe_allow_html=True)
             else:
                 st.info("No results to display. Perform a search in the Chat tab.")
-
 
 
     def detect_intent(self, query: str) -> str:
@@ -736,14 +1158,46 @@ class ArxivChatbot:
 
 
 
-    def search_articles(self, query: str, k: int = 10) -> List[Dict]:
+    # def search_articles(self, query: str, k: int = 10) -> List[Dict]:
+    #     """
+    #     Search for articles with caching and error handling.
+    #     """
+    #     self._initialize_components()
+        
+    #     # Check cache first
+    #     cache_key = self._get_cache_key(query)
+    #     if cache_key in self.response_cache:
+    #         logger.info(f"Returning cached results for query: {query[:50]}...")
+    #         return self.response_cache[cache_key]
+            
+    #     try:
+    #         # Perform search
+    #         results = self.search_engine.search_by_text(query, self.embedder, k, search_fields="all")
+            
+    #         # Cache results
+    #         if len(self.response_cache) >= self.max_cache_size:
+    #             # Remove oldest entries
+    #             oldest_keys = list(self.response_cache.keys())[:100]
+    #             for key in oldest_keys:
+    #                 del self.response_cache[key]
+                    
+    #         self.response_cache[cache_key] = results
+            
+    #         return results
+            
+    #     except Exception as e:
+    #         logger.error(f"Error searching articles: {e}")
+    #         return []
+
+
+    def search_articles(self, query: str, k: int = 10, author_filter: str = None) -> List[Dict]:
         """
         Search for articles with caching and error handling.
         """
         self._initialize_components()
         
         # Check cache first
-        cache_key = self._get_cache_key(query)
+        cache_key = self._get_cache_key(query + (author_filter or ""))
         if cache_key in self.response_cache:
             logger.info(f"Returning cached results for query: {query[:50]}...")
             return self.response_cache[cache_key]
@@ -752,6 +1206,10 @@ class ArxivChatbot:
             # Perform search
             results = self.search_engine.search_by_text(query, self.embedder, k, search_fields="all")
             
+            # Apply author filter if provided
+            if author_filter:
+                results = [res for res in results if self._author_match(author_filter, res.get('author', ''))]
+                
             # Cache results
             if len(self.response_cache) >= self.max_cache_size:
                 # Remove oldest entries
@@ -1061,19 +1519,24 @@ class ArxivChatbot:
         if hasattr(self, '_is_web_interface') and self._is_web_interface:
             import streamlit as st
             
+            # Create columns for better layout
+            col1, col2 = st.columns(2)
+            
             if categories:
-                fig = self._generate_category_chart(categories, query)
-                st.pyplot(fig)
-                plt.close(fig)
+                with col1:
+                    fig = self._generate_category_chart(categories, query)
+                    st.pyplot(fig, use_container_width=True)
+                    plt.close(fig)
             
             if years and len(years) > 1:
-                fig = self._generate_trend_chart(years, query)
-                st.pyplot(fig)
-                plt.close(fig)
+                with col2:
+                    fig = self._generate_trend_chart(years, query)
+                    st.pyplot(fig, use_container_width=True)
+                    plt.close(fig)
             
             if authors:
                 fig = self._generate_author_chart(authors, query)
-                st.pyplot(fig)
+                st.pyplot(fig, use_container_width=True)
                 plt.close(fig)
         else:
             # For non-web interface, provide textual statistics
