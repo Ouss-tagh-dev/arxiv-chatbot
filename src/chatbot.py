@@ -22,6 +22,12 @@ import numpy as np
 import streamlit as st
 import pandas as pd
 
+import matplotlib.pyplot as plt
+import seaborn as sns
+from collections import Counter
+import io
+import base64
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -254,6 +260,7 @@ class ArxivChatbot:
     def web_interface(self):
             """Run the chatbot with a Streamlit web interface."""
 
+            self._is_web_interface = True
             self._initialize_components()
             # Configure page
             st.set_page_config(
@@ -570,13 +577,20 @@ class ArxivChatbot:
         q = query.lower().strip()
         
         # Statistical queries - look for counting/quantity words
-        stat_keywords = [
-            "how many", "count", "number of", "statistics", "stats",
-            "total", "amount", "volume", "frequency", "percentage",
-            "proportion", "distribution", "analysis of"
+        stat_patterns = [
+            (r"(how many|number of|count of|total) (papers|articles|studies|publications)", "statistics"),
+            (r"(statistics|stats|analysis) (of|on|for|about)", "statistics"),
+            (r"distribution of (papers|articles|studies)", "statistics"),
+            (r"percentage of (papers|articles) (in|about)", "statistics"),
+            (r"trends? in (publications|papers|research)", "statistics"),
+            (r"most (active|productive|published) authors?", "statistics"),
+            (r"popular (categories|fields|topics)", "statistics")
         ]
-        if any(phrase in q for phrase in stat_keywords):
-            return "statistics"
+        
+        for pattern, intent in stat_patterns:
+            if re.search(pattern, q):
+                return intent
+
         
         # Author queries - look for people/researcher focused terms
         author_keywords = [
@@ -618,8 +632,10 @@ class ArxivChatbot:
         trend_keywords = [
             "trend", "evolution", "over time", "history of", "progress",
             "development", "advancement", "timeline", "growth", "decline",
-            "patterns", "changes", "evolution of"
+            "patterns", "changes", "evolution of", 
+            "trending categories", "which categories are trending", "hottest fields"
         ]
+
         if any(phrase in q for phrase in trend_keywords):
             return "trend"
         
@@ -640,6 +656,14 @@ class ArxivChatbot:
         if any(phrase in q for phrase in recommendation_keywords):
             return "recommendation"
         
+        # Category intent detection
+        category_keywords = [
+            "category", "show stats for", "summary of category", 
+            "papers in category", "trending in", "what's new in"
+        ]
+        if any(kw in q for kw in category_keywords):
+            return "category"
+
         # Default to search for everything else
         return "search"
 
@@ -815,6 +839,7 @@ class ArxivChatbot:
             "trend": self._generate_trend_response,
             "definition": self._generate_definition_response,
             "recommendation": self._generate_recommendation_response,
+            "category": self._generate_category_response,
             "search": self._generate_search_response  # Default fallback
         }
         
@@ -926,14 +951,16 @@ class ArxivChatbot:
         return response
     
 
+
+
     def _generate_statistics_response(self, query: str, results: List[Dict]) -> str:
-        """Generate comprehensive statistics for any arXiv topic."""
+        """Generate comprehensive statistics with visualizations."""
         total = len(results)
         
         if total == 0:
             return self._generate_no_results_response(query, "statistics")
         
-        # Comprehensive analysis
+        # Enhanced analysis
         categories = {}
         years = {}
         authors = {}
@@ -944,75 +971,184 @@ class ArxivChatbot:
             cat = res.get('primary_category', 'Unknown')
             categories[cat] = categories.get(cat, 0) + 1
             
-            # Years
-            year = res.get('published_date', '')
-            if isinstance(year, pd.Timestamp):
-                year = year.strftime('%Y')
-            elif isinstance(year, str):
-                year = year[:4] if year else ''
-            else:
-                year = ''
+            # Years - enhanced parsing
+            year = self._extract_year(res.get('published_date', ''))
+            if year:
+                years[year] = years.get(year, 0) + 1
             
-            # Authors
-            author_list = res.get('author', '').split(';')
+            # Authors - enhanced parsing
+            author_list = self._parse_authors(res.get('author', ''))
             for author in author_list:
-                author = author.strip()
                 if author:
                     unique_authors.add(author)
                     authors[author] = authors.get(author, 0) + 1
         
-        # Sort data
-        top_categories = sorted(categories.items(), key=lambda x: x[1], reverse=True)[:5]
-        top_years = sorted(years.items(), key=lambda x: x[1], reverse=True)[:5]
-        top_authors = sorted(authors.items(), key=lambda x: x[1], reverse=True)[:5]
-        
-        response = f"**📊 Statistics for '{query}':**\n\n"
+        # Prepare response
+        response = f"**📊 Comprehensive Statistics for '{query}':**\n\n"
         response += f"**🔢 Overview:**\n"
         response += f"• Total papers: **{total}**\n"
         response += f"• Unique authors: **{len(unique_authors)}**\n"
         response += f"• Publication years: **{len(years)}**\n"
         response += f"• Research categories: **{len(categories)}**\n\n"
         
-        # Categories breakdown
-        if top_categories:
-            response += "**📂 Top Research Categories:**\n"
-            for i, (cat, count) in enumerate(top_categories, 1):
-                percentage = (count / total) * 100
-                bar = "▓" * int(percentage / 5) + "░" * (20 - int(percentage / 5))
-                response += f"{i}. **{cat}**: {count} papers ({percentage:.1f}%)\n"
-                response += f"   {bar}\n"
+        # In web interface, display charts directly
+        if hasattr(self, '_is_web_interface') and self._is_web_interface:
+            import streamlit as st
+            
+            if categories:
+                fig = self._generate_category_chart(categories, query)
+                st.pyplot(fig)
+                plt.close(fig)
+            
+            if years and len(years) > 1:
+                fig = self._generate_trend_chart(years, query)
+                st.pyplot(fig)
+                plt.close(fig)
+            
+            if authors:
+                fig = self._generate_author_chart(authors, query)
+                st.pyplot(fig)
+                plt.close(fig)
+        else:
+            # For non-web interface, provide textual statistics
+            if categories:
+                response += "**📂 Top Research Categories:**\n"
+                top_cats = sorted(categories.items(), key=lambda x: x[1], reverse=True)[:5]
+                for i, (cat, count) in enumerate(top_cats, 1):
+                    percentage = (count / total) * 100
+                    response += f"{i}. **{cat}**: {count} papers ({percentage:.1f}%)\n"
+            
+            if years:
+                response += "\n**📅 Publication Timeline:**\n"
+                sorted_years = sorted(years.items())
+                for year, count in sorted_years[-5:]:  # Show most recent 5 years
+                    response += f"• **{year}**: {count} papers\n"
+            
+            if authors:
+                response += "\n**👥 Most Prolific Authors:**\n"
+                top_auths = sorted(authors.items(), key=lambda x: x[1], reverse=True)[:5]
+                for i, (author, count) in enumerate(top_auths, 1):
+                    response += f"{i}. **{author}**: {count} papers\n"
         
-        # Publication timeline
-        if top_years:
-            response += "\n**📅 Publication Timeline:**\n"
-            for year, count in top_years:
-                response += f"• **{year}**: {count} papers\n"
-        
-        # Most prolific authors
-        if top_authors:
-            response += "\n**👥 Most Prolific Authors:**\n"
-            for i, (author, count) in enumerate(top_authors, 1):
-                response += f"{i}. **{author}**: {count} papers\n"
-        
-        # Trends if enough data
+        # Trend analysis
         if len(years) > 2:
+            response += "\n**📈 Trend Analysis:**\n"
             sorted_years = sorted(years.items())
-            early_years = sorted_years[:len(sorted_years)//2]
-            recent_years = sorted_years[len(sorted_years)//2:]
+            mid_point = len(sorted_years) // 2
+            early = sum(count for _, count in sorted_years[:mid_point]) / mid_point
+            recent = sum(count for _, count in sorted_years[mid_point:]) / (len(sorted_years) - mid_point)
             
-            early_avg = sum(count for _, count in early_years) / len(early_years)
-            recent_avg = sum(count for _, count in recent_years) / len(recent_years)
-            
-            response += f"\n**📈 Trend Analysis:**\n"
-            if recent_avg > early_avg * 1.2:
-                response += f"• **Growing field** - Recent activity increased by {((recent_avg/early_avg)-1)*100:.1f}%\n"
-            elif recent_avg < early_avg * 0.8:
-                response += f"• **Declining activity** - Recent activity decreased by {(1-(recent_avg/early_avg))*100:.1f}%\n"
+            if recent > early * 1.2:
+                response += f"• **Growing field** (+{((recent/early)-1)*100:.1f}% increase)\n"
+            elif recent < early * 0.8:
+                response += f"• **Declining activity** (-{(1-(recent/early))*100:.1f}% decrease)\n"
             else:
-                response += f"• **Stable field** - Consistent publication rate\n"
+                response += "• **Stable publication rate**\n"
+        
+        # Add suggestions for further exploration
+        response += "\n**💡 Explore Further:**\n"
+        response += "• 'Show me papers from [year]' - Filter by specific year\n"
+        response += "• 'Papers by [author]' - Find works by specific researchers\n"
+        response += "• 'Trends in [category]' - Analyze specific research areas\n"
         
         return response
 
+    def _extract_year(self, date) -> Optional[str]:
+        """Extract year from various date formats."""
+        if isinstance(date, pd.Timestamp):
+            return str(date.year)
+        if isinstance(date, str):
+            if len(date) >= 4 and date[:4].isdigit():
+                return date[:4]
+        return None
+
+
+    def _parse_authors(self, authors_str: str) -> List[str]:
+        """Parse authors string into list of normalized names."""
+        if not authors_str or pd.isna(authors_str):
+            return []
+        
+        # Handle different formats
+        if authors_str.startswith('[') and authors_str.endswith(']'):
+            # Handle bracketed format like ["Author 1", "Author 2"]
+            try:
+                import ast
+                return [a.strip() for a in ast.literal_eval(authors_str) if a.strip()]
+            except:
+                # Fallback to splitting if eval fails
+                authors_str = authors_str[1:-1]  # Remove brackets
+        
+        # Common delimiters in author strings
+        delimiters = [';', ',', ' and ']
+        
+        # Split by the first delimiter found
+        for delim in delimiters:
+            if delim in authors_str:
+                return [a.strip().strip('"').strip("'") 
+                    for a in authors_str.split(delim) 
+                    if a.strip()]
+        
+        return [authors_str.strip()]
+    
+
+    def _generate_category_chart(self, categories: Dict[str, int], query: str):
+        """Generate a category distribution chart and return figure."""
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        # Prepare data
+        sorted_cats = sorted(categories.items(), key=lambda x: x[1], reverse=True)[:10]
+        cats, counts = zip(*sorted_cats)
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(10, 6))
+        sns.barplot(x=list(counts), y=list(cats), palette="viridis", ax=ax)
+        ax.set_title(f"Category Distribution for '{query}'")
+        ax.set_xlabel("Number of Papers")
+        ax.set_ylabel("Category")
+        
+        return fig
+
+    def _generate_trend_chart(self, years: Dict[str, int], query: str):
+        """Generate a publication trend chart."""
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        # Prepare data
+        sorted_years = sorted(years.items())
+        years_list, counts = zip(*sorted_years)
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(10, 5))
+        sns.lineplot(x=list(years_list), y=list(counts), marker='o', ax=ax)
+        ax.set_title(f"Publication Trend for '{query}'")
+        ax.set_xlabel("Year")
+        ax.set_ylabel("Number of Papers")
+        plt.xticks(rotation=45)
+        plt.grid(True)
+        
+        return fig
+
+    def _generate_author_chart(self, authors: Dict[str, int], query: str):
+        """Generate a top authors chart."""
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        # Prepare data
+        sorted_authors = sorted(authors.items(), key=lambda x: x[1], reverse=True)[:10]
+        authors_list, counts = zip(*sorted_authors)
+        
+        # Shorten author names
+        authors_short = [name[:20] + '...' if len(name) > 20 else name for name in authors_list]
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(10, 6))
+        sns.barplot(x=list(counts), y=authors_short, palette="rocket", ax=ax)
+        ax.set_title(f"Top Authors for '{query}'")
+        ax.set_xlabel("Number of Papers")
+        ax.set_ylabel("Author")
+        
+        return fig
 
     def _generate_author_response(self, query: str, results: List[Dict]) -> str:
         """
@@ -1078,20 +1214,25 @@ class ArxivChatbot:
 
 
     def _respond_author_mode(self, author_query: str, results: List[Dict]) -> str:
-        """
-        Given an *author_query* (user-typed name or fragment) and a pool of `results`
-        (semantic search on the user query), filter for papers where any author matches.
-        """
         author_pattern = author_query.strip().strip('"').strip("'")
-        if not results:
-            return f"No results were available to check for author '{author_pattern}'."
-
-        # Collect matches
         author_papers = []
-        for paper in results:
-            authors = paper.get('author', '')
-            if isinstance(authors, str) and self._author_match(author_pattern, authors):
-                author_papers.append(paper)
+
+        print(f"\nDEBUG: Searching for author '{author_query}'")
+
+        # ✅ Prefer full dataset if available
+        if hasattr(self, 'df') and isinstance(self.df, pd.DataFrame):
+            for i, row in self.df.iterrows():
+                authors = row.get('author', '')
+                if self._author_match(author_pattern, authors):
+                    paper = row.to_dict()
+                    paper['similarity'] = 1.0  # Optional: treat as max relevance
+                    author_papers.append(paper)
+        else:
+            # fallback to semantic results
+            for i, paper in enumerate(results):
+                authors = paper.get('author', '')
+                if self._author_match(author_pattern, authors):
+                    author_papers.append(paper)
 
         if not author_papers:
             return f"No papers found matching author '{author_pattern}'. Try adjusting spelling (e.g., initials vs full name)."
@@ -1107,10 +1248,9 @@ class ArxivChatbot:
             response += f"   📅 Published: {self._format_pub_date(paper.get('published_date'))}\n"
             response += f"   👥 Authors: {paper.get('author', 'Unknown authors')}\n"
             response += f"   📂 Category: {paper.get('primary_category', 'Unknown category')}\n"
-            response += f"   🎯 Relevance: {paper.get('similarity', 0):.1%}\n"
             response += f"   {self._format_links_block(paper, indent='   ')}\n\n"
 
-        return response.rstrip()  # trim last newline
+        return response.rstrip()
 
 
     def _respond_who_mode(self, paper_title_query: str) -> str:
@@ -1174,93 +1314,75 @@ class ArxivChatbot:
 
 
     def _author_match(self, pattern: str, authors: str) -> bool:
-        """
-        Accent- and punctuation-insensitive matching.
-        Supports partials: first/last, substring >=4 chars, or initial+last.
-        Authors string is assumed semicolon-separated or bracketed form.
-        """
-        import unicodedata, re
+        """Strict matching: match only if full name is present among parsed authors."""
+        pattern_norm = self._normalize_name(pattern)
 
-        def norm(s: str) -> str:
-            s = unicodedata.normalize('NFKD', s)
-            s = "".join(ch for ch in s if not unicodedata.combining(ch))  # strip accents
-            s = s.lower()
-            s = re.sub(r'[^a-z0-9\s\-\.]', ' ', s)
-            s = re.sub(r'\s+', ' ', s).strip()
-            return s
-
-        # normalize user pattern
-        patt_norm = norm(pattern)
-        patt_tokens = patt_norm.split()
-
-        # split authors (handles both ; and , inside bracketed strings)
-        # first strip leading bracket forms like ["A"; "B"]
-        cleaned = authors.strip().strip('[]')
-        author_list = [a.strip().strip('"').strip("'") for a in re.split(r';|,', cleaned) if a.strip()]
-
-        for raw_author in author_list:
-            auth_norm = norm(raw_author)
-            auth_tokens = auth_norm.split()
-
-            # exact string match
-            if patt_norm == auth_norm:
+        author_list = self._parse_authors(authors)
+        for author in author_list:
+            author_norm = self._normalize_name(author)
+            if pattern_norm == author_norm:
                 return True
-
-            # all pattern tokens found in author tokens (order-insensitive)
-            if patt_tokens and all(any(ptok == atok for atok in auth_tokens) or ptok in auth_norm for ptok in patt_tokens):
-                return True
-
-            # last token match (surname) if pattern single token
-            if len(patt_tokens) == 1 and patt_tokens[0] and patt_tokens[0] in auth_tokens[-1:]:
-                return True
-
-            # substring len>=4
-            if len(patt_norm) >= 4 and patt_norm in auth_norm:
-                return True
-
         return False
 
 
-    def _looks_like_author_name(self, text: str) -> bool:
-        """
-        Heuristic: short-ish, low stopword count, mostly name-like tokens.
-        Good enough to distinguish 'Sven-Ake Wegner' from long paper titles.
-        """
+    def _normalize_name(self, name: str) -> str:
+        import unicodedata
         import re
+        if not name:
+            return ""
+        name = unicodedata.normalize('NFKD', name)
+        name = ''.join(c for c in name if not unicodedata.combining(c))
+        name = re.sub(r'[^\w\s-]', '', name.lower())
+        return name.strip()
 
+
+    def _looks_like_author_name(self, text: str) -> bool:
+        """Improved heuristic for detecting author names."""
+        import re
+        
         t = text.strip().strip('"').strip("'")
         if not t:
             return False
-
+        
+        # Common academic name patterns
+        name_patterns = [
+            r"^[A-Z][a-z]+ [A-Z][a-z]+$",  # First Last
+            r"^[A-Z][a-z]+ [A-Z]\. [A-Z][a-z]+$",  # First M. Last
+            r"^[A-Z]\. [A-Z][a-z]+$",  # M. Last
+            r"^[A-Z][a-z]+-[A-Z][a-z]+ [A-Z][a-z]+$",  # Hyphenated names
+        ]
+        
+        if any(re.match(p, t) for p in name_patterns):
+            return True
+        
         tokens = re.split(r'\s+', t)
+        
         # Quick length check
         if len(tokens) > 6:  # very long -> probably a title
             return False
-
+        
         # Common title stopwords
-        stop = {"for","of","in","on","with","and","the","a","an","to","from","via","using","into","behavior","network","errors","algorithm"}
+        stop = {"for","of","in","on","with","and","the","a","an","to",
+                "from","via","using","into","behavior","network",
+                "errors","algorithm","study","analysis","model"}
         stop_hits = sum(1 for tok in tokens if tok.lower() in stop)
         if stop_hits >= 2:
             return False
-
-        # If most tokens start uppercase letter OR are initials, likely a name
+        
+        # If most tokens start uppercase letter OR are initials
         name_like = 0
         for tok in tokens:
             if re.match(r"^[A-Z][\w\-'.]*$", tok) or re.match(r"^[A-Z]\.?$", tok):
                 name_like += 1
         if name_like >= max(1, len(tokens) - 1):
             return True
-
-        # If contains a hyphenated cap token (e.g., Sven-Ake) and token count <=4, likely name
+        
+        # If contains a hyphenated cap token and token count <=4
         if any('-' in tok for tok in tokens) and len(tokens) <= 4:
             return True
-
-        # Fallback: short (<=3 tokens) & no stopwords -> call it a name
-        if len(tokens) <= 3 and stop_hits == 0:
-            return True
-
-        return False
-
+        
+        # Fallback: short (<=3 tokens) & no stopwords
+        return len(tokens) <= 3 and stop_hits == 0
 
 
     def _generate_recent_response(self, query: str, results: List[Dict]) -> str:
@@ -1352,13 +1474,13 @@ class ArxivChatbot:
 
 
     def _generate_trend_response(self, query: str, results: List[Dict]) -> str:
-        """Generate trend analysis response for any topic."""
+        """Generate trend analysis with year timeline and trending categories."""
         if not results:
             return self._generate_no_results_response(query, "trend")
-        
+
         years = {}
         categories_by_year = {}
-        
+
         for res in results:
             pub_date = res.get('published_date', '')
             if isinstance(pub_date, pd.Timestamp):
@@ -1369,45 +1491,81 @@ class ArxivChatbot:
                 year = ''
             if year.isdigit():
                 years[year] = years.get(year, 0) + 1
-                
-                # Track categories by year
-                if year not in categories_by_year:
-                    categories_by_year[year] = {}
                 cat = res.get('primary_category', 'Unknown')
+                categories_by_year.setdefault(year, {})
                 categories_by_year[year][cat] = categories_by_year[year].get(cat, 0) + 1
-        
+
         if not years:
             return f"No publication dates found for papers on '{query}'."
-        
-        sorted_years = sorted(years.items())
-        
-        response = f"**Publication trends for '{query}':**\n\n"
-        response += f"📊 **Papers published by year:**\n"
-        
-        for year, count in sorted_years:
-            response += f"• {year}: {count} papers\n"
-        
-        # Trend analysis
+
+        sorted_years = sorted(years.items(), key=lambda x: int(x[0]))
+        year_lines = [f"• **{y}**: {c} paper{'s' if c != 1 else ''}" for y, c in sorted_years]
+        year_block = '\n'.join(year_lines)
+
+        response = f"**📈 Publication Trends for '{query.strip(' ?')}'**\n\n"
+        response += f"**🗓️ Timeline Overview:**\n{year_block}\n\n"
+
+        # Trend interpretation
         if len(sorted_years) > 2:
             recent_years = sorted_years[-3:]
             earlier_years = sorted_years[:-3]
-            
-            if recent_years and earlier_years:
-                recent_avg = sum(count for _, count in recent_years) / len(recent_years)
-                earlier_avg = sum(count for _, count in earlier_years) / len(earlier_years)
-                
-                response += f"\n**Trend Analysis:**\n"
-                if recent_avg > earlier_avg * 1.2:
-                    response += f"📈 **Growing interest** - Recent average: {recent_avg:.1f} papers/year vs Earlier: {earlier_avg:.1f}\n"
-                elif recent_avg < earlier_avg * 0.8:
-                    response += f"📉 **Declining interest** - Recent average: {recent_avg:.1f} papers/year vs Earlier: {earlier_avg:.1f}\n"
-                else:
-                    response += f"📊 **Stable interest** - Recent average: {recent_avg:.1f} papers/year vs Earlier: {earlier_avg:.1f}\n"
-        
-        # Peak year
+
+            recent_avg = sum(c for _, c in recent_years) / len(recent_years)
+            earlier_avg = sum(c for _, c in earlier_years) / len(earlier_years) if earlier_years else 0
+
+            response += "**📊 Trend Analysis:**\n"
+            if earlier_avg == 0 and recent_avg > 0:
+                response += "• 🚀 **Emerging topic** — no earlier activity, but recent publications show interest\n"
+            elif recent_avg > earlier_avg * 1.3:
+                response += f"• 📈 **Rising interest** — recent avg: {recent_avg:.1f} vs earlier avg: {earlier_avg:.1f}\n"
+            elif recent_avg < earlier_avg * 0.7:
+                response += f"• 📉 **Declining interest** — recent avg: {recent_avg:.1f} vs earlier avg: {earlier_avg:.1f}\n"
+            else:
+                response += f"• 📊 **Stable activity** — recent avg: {recent_avg:.1f} vs earlier avg: {earlier_avg:.1f}\n"
+
         peak_year, peak_count = max(years.items(), key=lambda x: x[1])
-        response += f"🏆 **Peak year:** {peak_year} with {peak_count} papers\n"
-        
+        response += f"• 🏆 **Peak year:** {peak_year} with {peak_count} paper{'s' if peak_count != 1 else ''}\n"
+
+        # Optional: highlight recent categories
+        if categories_by_year:
+            latest_year = sorted(categories_by_year.keys())[-1]
+            recent_cats = categories_by_year[latest_year]
+            top_cat = max(recent_cats.items(), key=lambda x: x[1])[0]
+            response += f"• 🧠 **Most active category in {latest_year}**: {top_cat}\n"
+
+        # 🔥 Trending categories
+        response += "\n**🔥 Trending Research Categories:**\n"
+        category_growth = {}
+
+        for year in sorted(categories_by_year.keys()):
+            for cat, count in categories_by_year[year].items():
+                category_growth.setdefault(cat, [])
+                category_growth[cat].append((year, count))
+
+        growth_scores = []
+        for cat, yearly_counts in category_growth.items():
+            if len(yearly_counts) < 2:
+                continue
+            yearly_counts.sort()
+            first_year, first_count = yearly_counts[0]
+            last_year, last_count = yearly_counts[-1]
+            growth = (last_count - first_count) / max(1, first_count)
+            growth_scores.append((cat, growth, first_count, last_count))
+
+        top_trending = sorted(growth_scores, key=lambda x: x[1], reverse=True)[:3]
+
+        if top_trending:
+            for cat, growth, start, end in top_trending:
+                trend_type = "📈 Rising" if growth > 0 else "📉 Declining"
+                response += f"• {trend_type} **{cat}** — from {start} to {end} papers\n"
+        else:
+            response += "• Not enough data to detect category trends.\n"
+
+        # Follow-up ideas
+        response += "\n**💡 Want to explore more?** Try:\n"
+        response += "• 'Show papers from 2023 in this field'\n"
+        response += "• 'Which authors are most active in AI?'\n"
+
         return response
 
 
@@ -1515,6 +1673,70 @@ class ArxivChatbot:
         response += "• Includes recent and influential work\n"
         
         return response
+
+
+
+    def _generate_category_response(self, query: str, results: List[Dict]) -> str:
+        """
+        Extract category code from query and analyze matching papers.
+        Show statistics + recent results.
+        """
+        import re
+        # Match arXiv-style category like cs.LG, stat.ML, math.OC
+        category_match = re.search(r"\b([a-z\-]+(?:\.[a-z\-]+))\b", query.lower())
+        if not category_match:
+            return "⚠️ I couldn't detect a valid arXiv category in your request. Try something like: `stats for cs.AI`"
+
+        category_code = category_match.group(1)
+        print(f"DEBUG: Extracted category '{category_code}'")
+
+        if not hasattr(self, 'df') or self.df is None:
+            return "⚠️ Data not loaded."
+
+        df = self.df
+        if 'primary_category' not in df.columns:
+            return "⚠️ Primary category column is missing in the data."
+
+        matches = df[df['primary_category'].str.lower() == category_code]
+
+        if matches.empty:
+            return f"No papers found in category `{category_code}`."
+
+        # Statistics
+        total = len(matches)
+        years = matches['published_date'].dropna().astype(str).str[:4]
+        year_dist = years.value_counts().sort_index()
+
+        author_counter = Counter()
+        for authors in matches['author'].dropna():
+            for name in self._parse_authors(authors):
+                author_counter[name] += 1
+
+        response = f"**📂 Stats for Category `{category_code}`**\n\n"
+        response += f"• Total papers: **{total}**\n"
+        if not year_dist.empty:
+            response += f"• Publication years: {year_dist.index.min()} – {year_dist.index.max()}\n"
+        response += f"• Unique authors: {len(author_counter)}\n"
+
+        # Top authors
+        top_authors = author_counter.most_common(5)
+        if top_authors:
+            response += "\n**👥 Top Authors:**\n"
+            for i, (name, count) in enumerate(top_authors, 1):
+                response += f"{i}. {name} — {count} paper{'s' if count > 1 else ''}\n"
+
+        # Recent papers
+        recent = matches.sort_values("published_date", ascending=False).head(5)
+        if not recent.empty:
+            response += "\n**🆕 Most Recent Papers:**\n"
+            for i, row in recent.iterrows():
+                title = row['title'][:80] + "..." if len(row['title']) > 80 else row['title']
+                authors = row['author'][:60] + "..." if len(row['author']) > 60 else row['author']
+                date = self._format_pub_date(row.get('published_date'))
+                response += f"- **{title}**\n  👥 {authors} | 📅 {date}\n"
+
+        return response
+
 
 
     def _generate_default_response(self, query: str, results: List[Dict]) -> str:
