@@ -256,6 +256,427 @@ class ArxivChatbot:
                 logger.error(f"Failed to load data: {e}")
                 self.df = pd.DataFrame()
 
+    def web_interface(self):
+        """Run the chatbot with a Streamlit web interface."""
+        self._is_web_interface = True
+        self._initialize_components()
+        
+        # Configure page
+        st.set_page_config(
+            page_title="arXiv Research Assistant",
+            page_icon="📚",
+            layout="wide",
+            initial_sidebar_state="expanded"
+        )
+
+        # Add custom CSS
+        st.markdown("""
+        <style>
+            .main-header {
+                font-size: 2.5rem;
+                font-weight: bold;
+                color: #1f77b4;
+                text-align: center;
+                margin-bottom: 1rem;
+            }
+            .chat-container {
+                max-height: 60vh;
+                overflow-y: auto;
+                padding-right: 1rem;
+                margin-bottom: 1rem;
+            }
+            .chat-message {
+                padding: 1rem;
+                border-radius: 0.75rem;
+                margin: 0.75rem 0;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            }
+            .user-message {
+                background-color: #e3f2fd;
+                border-left: 4px solid #2196f3;
+                margin-left: 15%;
+            }
+            .bot-message {
+                background-color: #f5f5f5;
+                border-left: 4px solid #757575;
+                margin-right: 15%;
+            }
+            .result-card {
+                background-color: #f8f9fa;
+                border-radius: 0.75rem;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+                padding: 1.25rem;
+                margin-bottom: 1.25rem;
+            }
+            .database-info {
+                background-color: #f8f9fa;
+                border-radius: 0.75rem;
+                padding: 1rem;
+                margin-bottom: 1.5rem;
+            }
+            /* Styles for charts */
+            .stPlot {
+                border-radius: 0.5rem;
+                padding: 0.5rem;
+                background-color: white;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                margin-bottom: 1rem;
+            }
+            /* Ensure chat input stays visible */
+            .stChatInput {
+                position: sticky;
+                bottom: 0;
+                background: white;
+                padding: 1rem 0;
+                z-index: 100;
+            }
+            /* Better tabs styling */
+            .stTabs [data-baseweb="tab-list"] {
+                gap: 0.5rem;
+            }
+            .stTabs [data-baseweb="tab"] {
+                padding: 0.5rem 1rem;
+                border-radius: 0.5rem 0.5rem 0 0;
+            }
+        </style>
+        """, unsafe_allow_html=True)
+
+        # Initialize session state
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
+        if "search_results" not in st.session_state:
+            st.session_state.search_results = []
+        if "query_stats" not in st.session_state:
+            st.session_state.query_stats = {}
+        
+        # Initialize chat history
+        if "chat_history" not in st.session_state:
+            st.session_state.chat_history = {}
+            st.session_state.current_chat_id = None
+            st.session_state.current_chat_name = "New Chat"
+
+        # Main header
+        st.markdown('<h1 class="main-header">arXiv Research Assistant</h1>', unsafe_allow_html=True)
+
+        # --- SIDEBAR ---
+        with st.sidebar:
+            st.markdown("## 💬 Chat History")
+            
+            # Button to create new chat
+            if st.button("➕ New Chat", use_container_width=True):
+                new_chat_id = str(int(time.time()))
+                st.session_state.chat_history[new_chat_id] = {
+                    "name": f"Chat {len(st.session_state.chat_history) + 1}",
+                    "messages": []
+                }
+                st.session_state.current_chat_id = new_chat_id
+                st.session_state.current_chat_name = st.session_state.chat_history[new_chat_id]["name"]
+                st.session_state.messages = []
+                st.session_state.search_results = []
+                st.rerun()
+            
+            # Display chat history list
+            st.markdown("### Your Chats")
+            for chat_id, chat_data in st.session_state.chat_history.items():
+                # Display chat name with button to load it
+                if st.button(
+                    f"{'▶️ ' if chat_id == st.session_state.current_chat_id else ''}{chat_data['name']}",
+                    key=f"chat_{chat_id}",
+                    help=f"Last message: {chat_data['messages'][-1]['content'][:30] + '...' if chat_data['messages'] else 'Empty chat'}",
+                    use_container_width=True
+                ):
+                    st.session_state.current_chat_id = chat_id
+                    st.session_state.current_chat_name = chat_data["name"]
+                    st.session_state.messages = chat_data["messages"]
+                    st.session_state.search_results = []
+                    st.rerun()
+            
+            # Save/load functionality
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("💾 Save Chats", use_container_width=True):
+                    with open("chat_history.json", "w") as f:
+                        json.dump(st.session_state.chat_history, f)
+                    st.success("Chats saved!")
+            with col2:
+                if st.button("📂 Load Chats", use_container_width=True):
+                    try:
+                        with open("chat_history.json", "r") as f:
+                            st.session_state.chat_history = json.load(f)
+                        st.success("Chats loaded!")
+                    except FileNotFoundError:
+                        st.error("No chat history found")
+
+            # Search parameters
+            st.markdown("## 🔍 Search Parameters")
+            num_results = st.slider(
+                "Number of results",
+                min_value=1,
+                max_value=MAX_RESULTS,
+                value=10,
+                help="Maximum number of articles to return"
+            )
+            
+            # Filters
+            st.markdown("### Filters")
+            author_filter = st.text_input(
+                "Author name contains",
+                placeholder="e.g., Smith, Bengio, etc.",
+                help="Filter by author name (partial match)"
+            )
+            
+            # Year filter
+            if hasattr(self, 'df') and 'published_date' in self.df.columns:
+                try:
+                    self.df['published_date'] = pd.to_datetime(self.df['published_date'], errors='coerce')
+                    years = sorted(self.df['published_date'].dt.year.dropna().unique(), reverse=True)
+                    year_filter = st.selectbox(
+                        "Publication year",
+                        ["All years"] + [str(int(y)) for y in years],
+                        index=0
+                    )
+                except:
+                    year_filter = "All years"
+            else:
+                year_filter = "All years"
+            
+            # Category filter
+            if hasattr(self, 'df') and 'primary_category' in self.df.columns:
+                categories = sorted([
+                    c for c in self.df["primary_category"].dropna().unique() 
+                    if c and c != 'Unknown'
+                ])
+                selected_categories = st.multiselect(
+                    "Categories",
+                    categories,
+                    default=categories[:3] if len(categories) >= 3 else categories,
+                    help="Select one or more categories"
+                )
+            else:
+                selected_categories = []
+            
+            # Advanced options
+            with st.expander("Advanced Options"):
+                similarity_threshold = st.slider(
+                    "Minimum similarity",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.3,
+                    step=0.05,
+                    help="Filter out low similarity results"
+                )
+                
+                rerank_method = st.selectbox(
+                    "Rerank method",
+                    ["Relevance", "Diversity", "Recent first"],
+                    index=0
+                )
+            
+            # Display system info
+            mem = psutil.virtual_memory()
+            # st.markdown(f"""
+            # <div class='database-info'>
+            # <strong>🖥️ System Resources:</strong><br>
+            # Memory: {mem.used / (1024**3):.1f} GB / {mem.total / (1024**3):.1f} GB ({mem.percent}%)<br>
+            # CPU: {psutil.cpu_percent()}%<br>
+            # Threads: {psutil.Process().num_threads()}
+            # </div>
+            # """, unsafe_allow_html=True)
+
+            # Obtenir l'utilisation CPU avec un intervalle pour avoir une mesure précise
+            cpu_usage = psutil.cpu_percent(interval=0.5)  # Mesure sur 0.5 seconde
+
+            st.markdown(f"""
+            <div class='database-info'>
+            <strong>🖥️ System Resources:</strong><br>
+            Memory: {mem.used / (1024**3):.1f} GB / {mem.total / (1024**3):.1f} GB ({mem.percent}%)<br>
+            CPU: {cpu_usage}%<br>
+            Threads: {psutil.Process().num_threads()}
+            </div>
+            """, unsafe_allow_html=True)
+            
+        # Initialize current chat if none exists
+        if st.session_state.current_chat_id is None:
+            new_chat_id = str(int(time.time()))
+            st.session_state.chat_history[new_chat_id] = {
+                "name": "Chat 1",
+                "messages": []
+            }
+            st.session_state.current_chat_id = new_chat_id
+            st.session_state.current_chat_name = st.session_state.chat_history[new_chat_id]["name"]
+
+        # Display current chat name
+        st.markdown(f"### {st.session_state.current_chat_name}")
+
+        # --- MAIN INTERFACE ---
+        tab_chat, tab_results = st.tabs(["Chat", "Results"])
+
+        with tab_chat:
+            # Display chat history in a container
+            chat_container = st.container()
+            with chat_container:
+                st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+                for message in st.session_state.messages:
+                    with st.chat_message(message["role"]):
+                        st.markdown(message["content"])
+                st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Chat input - outside the container to stay visible
+            if prompt := st.chat_input("Ask about arXiv research..."):
+                # Add user message to chat
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                with chat_container:
+                    with st.chat_message("user"):
+                        st.markdown(prompt)
+                
+                try:
+                    # Prepare enhanced query with filters
+                    enhanced_query = prompt
+                    
+                    # Apply filters
+                    if year_filter != "All years":
+                        enhanced_query += f" year:{year_filter}"
+                    if author_filter.strip():
+                        enhanced_query += f" author:{author_filter.strip()}"
+                    if selected_categories:
+                        enhanced_query += " " + " ".join(f"category:{cat}" for cat in selected_categories)
+                    
+                    # Perform search with progress bar
+                    with st.spinner("Searching arXiv database..."):
+                        search_progress = st.progress(0)
+                        
+                        # Track query metrics
+                        start_time = time.time()
+                        results = self.search_articles(
+                            enhanced_query, 
+                            k=num_results * 3,  # Get more results for filtering
+                            author_filter=author_filter.strip() if author_filter.strip() else None
+                        )
+                        search_time = time.time() - start_time
+                        
+                        # Apply post-search filters
+                        filtered_results = [
+                            r for r in results 
+                            if r.get('similarity', 0) >= similarity_threshold
+                        ]
+                        
+                        # Apply reranking
+                        if rerank_method == "Recent first" and 'published_date' in filtered_results[0]:
+                            filtered_results.sort(
+                                key=lambda x: x.get('published_date', ''),
+                                reverse=True
+                            )
+                        elif rerank_method == "Diversity":
+                            # Simple diversity - take top from each category
+                            categories = {}
+                            for res in filtered_results:
+                                cat = res.get('primary_category', 'other')
+                                if cat not in categories or res['similarity'] > categories[cat]['similarity']:
+                                    categories[cat] = res
+                            filtered_results = list(categories.values())
+                        
+                        # Limit to requested number of results
+                        filtered_results = filtered_results[:num_results]
+                        
+                        search_progress.progress(100)
+                    
+                    # Generate response
+                    with st.spinner("Generating response..."):
+                        response = self.generate_response(prompt, filtered_results)
+                        st.session_state.messages.append({"role": "assistant", "content": response})
+                        with chat_container:
+                            with st.chat_message("assistant"):
+                                st.markdown(response)
+                    
+                    # Store results and stats
+                    st.session_state.search_results = filtered_results
+                    st.session_state.query_stats = {
+                        "query": prompt,
+                        "time": search_time,
+                        "total_results": len(results),
+                        "filtered_results": len(filtered_results),
+                        "similarity_threshold": similarity_threshold
+                    }
+                    
+                    # Update chat history
+                    if st.session_state.current_chat_id:
+                        st.session_state.chat_history[st.session_state.current_chat_id]["messages"] = st.session_state.messages
+                    
+                except Exception as e:
+                    error_msg = f"Error processing query: {str(e)}"
+                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                    with chat_container:
+                        with st.chat_message("assistant"):
+                            st.markdown(error_msg)
+                    logger.error(f"Search error: {str(e)}")
+
+        with tab_results:
+            if st.session_state.search_results:
+                st.markdown(f"### 📊 Found {len(st.session_state.search_results)} results")
+                
+                # Display stats
+                if st.session_state.query_stats:
+                    stats = st.session_state.query_stats
+                    st.markdown(f"""
+                    Query: "{stats['query']}"<br>
+                    Search time: {stats['time']:.2f}s | 
+                    Initial results: {stats['total_results']} | 
+                    After filtering: {stats['filtered_results']}
+                    """, unsafe_allow_html=True)
+                
+                # Display results
+                for i, result in enumerate(st.session_state.search_results, 1):
+                    with st.expander(f"{i}. {result.get('title', 'No Title')[:120]}...", expanded=False):
+                        st.markdown('<div class="result-card">', unsafe_allow_html=True)
+                        
+                        # Header with similarity score
+                        col1, col2 = st.columns([4, 1])
+                        with col1:
+                            st.markdown(f"**{result.get('title', 'No Title')}**")
+                        with col2:
+                            st.markdown(f"`Similarity: {result.get('similarity', 0):.3f}`")
+                        
+                        # Metadata row
+                        meta_col1, meta_col2, meta_col3 = st.columns([2, 2, 1])
+                        
+                        with meta_col1:
+                            authors = result.get('author', 'Unknown')
+                            if len(authors) > 60:
+                                authors = authors[:57] + "..."
+                            st.markdown(f"**Authors**: {authors}")
+                        
+                        with meta_col2:
+                            pub_date = result.get('published_date', 'Unknown')
+                            if isinstance(pub_date, str):
+                                try:
+                                    pub_date = pd.to_datetime(pub_date).strftime('%Y-%m-%d')
+                                except:
+                                    pass
+                            st.markdown(f"**Published**: {pub_date}")
+                        
+                        with meta_col3:
+                            cat = result.get('primary_category', result.get('category', ''))
+                            st.markdown(f"**Category**: {cat[:20]}" if cat else "**Category**: N/A")
+                        
+                        # Summary
+                        summary = result.get('summary', 'No summary available')
+                        st.markdown(f"**Summary**: {summary}")
+                        
+                        # Links
+                        link_col1, link_col2 = st.columns(2)
+                        with link_col1:
+                            arxiv_id = result.get('id', '')
+                            if arxiv_id:
+                                st.markdown(f"[📄 arXiv Paper](https://arxiv.org/abs/{arxiv_id})")
+                        
+                        with link_col2:
+                            doi = result.get('doi', '')
+                            if doi and pd.notna(doi):
+                                st.markdown(f"[🌐 DOI](https://doi.org/{doi})")
+                        
+                        st.markdown('</div>', unsafe_allow_html=True)
+            else:
+                st.info("No results to display. Perform a search in the Chat tab.")
 
 
     # def web_interface(self):
@@ -635,426 +1056,426 @@ class ArxivChatbot:
 
 
 
-    def web_interface(self):
-        """Run the chatbot with a Streamlit web interface."""
-        self._is_web_interface = True
-        self._initialize_components()
+    # def web_interface(self):
+    #     """Run the chatbot with a Streamlit web interface."""
+    #     self._is_web_interface = True
+    #     self._initialize_components()
         
-        # Configure page
-        st.set_page_config(
-            page_title="arXiv Research Assistant",
-            page_icon="📚",
-            layout="wide",
-            initial_sidebar_state="expanded"
-        )
+    #     # Configure page
+    #     st.set_page_config(
+    #         page_title="arXiv Research Assistant",
+    #         page_icon="📚",
+    #         layout="wide",
+    #         initial_sidebar_state="expanded"
+    #     )
 
-        # Add custom CSS
-        st.markdown("""
-        <style>
-            .main-header {
-                font-size: 2.5rem;
-                font-weight: bold;
-                color: #1f77b4;
-                text-align: center;
-                margin-bottom: 1rem;
-            }
-            .chat-container {
-                max-height: 60vh;
-                overflow-y: auto;
-                padding-right: 1rem;
-                margin-bottom: 1rem;
-            }
-            .chat-message {
-                padding: 1rem;
-                border-radius: 0.75rem;
-                margin: 0.75rem 0;
-                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-            }
-            .user-message {
-                background-color: #e3f2fd;
-                border-left: 4px solid #2196f3;
-                margin-left: 15%;
-            }
-            .bot-message {
-                background-color: #f5f5f5;
-                border-left: 4px solid #757575;
-                margin-right: 15%;
-            }
-            .result-card {
-                background-color: #f8f9fa;
-                border-radius: 0.75rem;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-                padding: 1.25rem;
-                margin-bottom: 1.25rem;
-            }
-            .database-info {
-                background-color: #f8f9fa;
-                border-radius: 0.75rem;
-                padding: 1rem;
-                margin-bottom: 1.5rem;
-            }
-            /* Styles for charts */
-            .stPlot {
-                border-radius: 0.5rem;
-                padding: 0.5rem;
-                background-color: white;
-                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-                margin-bottom: 1rem;
-            }
-            /* Ensure chat input stays visible */
-            .stChatInput {
-                position: sticky;
-                bottom: 0;
-                background: white;
-                padding: 1rem 0;
-                z-index: 100;
-            }
-            /* Better tabs styling */
-            .stTabs [data-baseweb="tab-list"] {
-                gap: 0.5rem;
-            }
-            .stTabs [data-baseweb="tab"] {
-                padding: 0.5rem 1rem;
-                border-radius: 0.5rem 0.5rem 0 0;
-            }
-        </style>
-        """, unsafe_allow_html=True)
+    #     # Add custom CSS
+    #     st.markdown("""
+    #     <style>
+    #         .main-header {
+    #             font-size: 2.5rem;
+    #             font-weight: bold;
+    #             color: #1f77b4;
+    #             text-align: center;
+    #             margin-bottom: 1rem;
+    #         }
+    #         .chat-container {
+    #             max-height: 60vh;
+    #             overflow-y: auto;
+    #             padding-right: 1rem;
+    #             margin-bottom: 1rem;
+    #         }
+    #         .chat-message {
+    #             padding: 1rem;
+    #             border-radius: 0.75rem;
+    #             margin: 0.75rem 0;
+    #             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    #         }
+    #         .user-message {
+    #             background-color: #e3f2fd;
+    #             border-left: 4px solid #2196f3;
+    #             margin-left: 15%;
+    #         }
+    #         .bot-message {
+    #             background-color: #f5f5f5;
+    #             border-left: 4px solid #757575;
+    #             margin-right: 15%;
+    #         }
+    #         .result-card {
+    #             background-color: #f8f9fa;
+    #             border-radius: 0.75rem;
+    #             box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    #             padding: 1.25rem;
+    #             margin-bottom: 1.25rem;
+    #         }
+    #         .database-info {
+    #             background-color: #f8f9fa;
+    #             border-radius: 0.75rem;
+    #             padding: 1rem;
+    #             margin-bottom: 1.5rem;
+    #         }
+    #         /* Styles for charts */
+    #         .stPlot {
+    #             border-radius: 0.5rem;
+    #             padding: 0.5rem;
+    #             background-color: white;
+    #             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    #             margin-bottom: 1rem;
+    #         }
+    #         /* Ensure chat input stays visible */
+    #         .stChatInput {
+    #             position: sticky;
+    #             bottom: 0;
+    #             background: white;
+    #             padding: 1rem 0;
+    #             z-index: 100;
+    #         }
+    #         /* Better tabs styling */
+    #         .stTabs [data-baseweb="tab-list"] {
+    #             gap: 0.5rem;
+    #         }
+    #         .stTabs [data-baseweb="tab"] {
+    #             padding: 0.5rem 1rem;
+    #             border-radius: 0.5rem 0.5rem 0 0;
+    #         }
+    #     </style>
+    #     """, unsafe_allow_html=True)
 
-        # Initialize session state
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
-        if "search_results" not in st.session_state:
-            st.session_state.search_results = []
-        if "query_stats" not in st.session_state:
-            st.session_state.query_stats = {}
+    #     # Initialize session state
+    #     if "messages" not in st.session_state:
+    #         st.session_state.messages = []
+    #     if "search_results" not in st.session_state:
+    #         st.session_state.search_results = []
+    #     if "query_stats" not in st.session_state:
+    #         st.session_state.query_stats = {}
         
-        # Initialize chat history
-        if "chat_history" not in st.session_state:
-            st.session_state.chat_history = {}
-            st.session_state.current_chat_id = None
-            st.session_state.current_chat_name = "New Chat"
+    #     # Initialize chat history
+    #     if "chat_history" not in st.session_state:
+    #         st.session_state.chat_history = {}
+    #         st.session_state.current_chat_id = None
+    #         st.session_state.current_chat_name = "New Chat"
 
-        # Main header
-        st.markdown('<h1 class="main-header">arXiv Research Assistant</h1>', unsafe_allow_html=True)
+    #     # Main header
+    #     st.markdown('<h1 class="main-header">arXiv Research Assistant</h1>', unsafe_allow_html=True)
 
-        # --- SIDEBAR ---
-        with st.sidebar:
-            st.markdown("## 💬 Chat History")
+    #     # --- SIDEBAR ---
+    #     with st.sidebar:
+    #         st.markdown("## 💬 Chat History")
             
-            # Button to create new chat
-            if st.button("➕ New Chat", use_container_width=True):
-                new_chat_id = str(int(time.time()))
-                st.session_state.chat_history[new_chat_id] = {
-                    "name": f"Chat {len(st.session_state.chat_history) + 1}",
-                    "messages": []
-                }
-                st.session_state.current_chat_id = new_chat_id
-                st.session_state.current_chat_name = st.session_state.chat_history[new_chat_id]["name"]
-                st.session_state.messages = []
-                st.session_state.search_results = []
-                st.rerun()
+    #         # Button to create new chat
+    #         if st.button("➕ New Chat", use_container_width=True):
+    #             new_chat_id = str(int(time.time()))
+    #             st.session_state.chat_history[new_chat_id] = {
+    #                 "name": f"Chat {len(st.session_state.chat_history) + 1}",
+    #                 "messages": []
+    #             }
+    #             st.session_state.current_chat_id = new_chat_id
+    #             st.session_state.current_chat_name = st.session_state.chat_history[new_chat_id]["name"]
+    #             st.session_state.messages = []
+    #             st.session_state.search_results = []
+    #             st.rerun()
             
-            # Display chat history list
-            st.markdown("### Your Chats")
-            for chat_id, chat_data in st.session_state.chat_history.items():
-                # Display chat name with button to load it
-                if st.button(
-                    f"{'▶️ ' if chat_id == st.session_state.current_chat_id else ''}{chat_data['name']}",
-                    key=f"chat_{chat_id}",
-                    help=f"Last message: {chat_data['messages'][-1]['content'][:30] + '...' if chat_data['messages'] else 'Empty chat'}",
-                    use_container_width=True
-                ):
-                    st.session_state.current_chat_id = chat_id
-                    st.session_state.current_chat_name = chat_data["name"]
-                    st.session_state.messages = chat_data["messages"]
-                    st.session_state.search_results = []
-                    st.rerun()
+    #         # Display chat history list
+    #         st.markdown("### Your Chats")
+    #         for chat_id, chat_data in st.session_state.chat_history.items():
+    #             # Display chat name with button to load it
+    #             if st.button(
+    #                 f"{'▶️ ' if chat_id == st.session_state.current_chat_id else ''}{chat_data['name']}",
+    #                 key=f"chat_{chat_id}",
+    #                 help=f"Last message: {chat_data['messages'][-1]['content'][:30] + '...' if chat_data['messages'] else 'Empty chat'}",
+    #                 use_container_width=True
+    #             ):
+    #                 st.session_state.current_chat_id = chat_id
+    #                 st.session_state.current_chat_name = chat_data["name"]
+    #                 st.session_state.messages = chat_data["messages"]
+    #                 st.session_state.search_results = []
+    #                 st.rerun()
             
-            # Save/load functionality
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("💾 Save Chats", use_container_width=True):
-                    with open("chat_history.json", "w") as f:
-                        json.dump(st.session_state.chat_history, f)
-                    st.success("Chats saved!")
-            with col2:
-                if st.button("📂 Load Chats", use_container_width=True):
-                    try:
-                        with open("chat_history.json", "r") as f:
-                            st.session_state.chat_history = json.load(f)
-                        st.success("Chats loaded!")
-                    except FileNotFoundError:
-                        st.error("No chat history found")
+    #         # Save/load functionality
+    #         col1, col2 = st.columns(2)
+    #         with col1:
+    #             if st.button("💾 Save Chats", use_container_width=True):
+    #                 with open("chat_history.json", "w") as f:
+    #                     json.dump(st.session_state.chat_history, f)
+    #                 st.success("Chats saved!")
+    #         with col2:
+    #             if st.button("📂 Load Chats", use_container_width=True):
+    #                 try:
+    #                     with open("chat_history.json", "r") as f:
+    #                         st.session_state.chat_history = json.load(f)
+    #                     st.success("Chats loaded!")
+    #                 except FileNotFoundError:
+    #                     st.error("No chat history found")
 
-            # Search parameters
-            st.markdown("## 🔍 Search Parameters")
-            num_results = st.slider(
-                "Number of results",
-                min_value=1,
-                max_value=MAX_RESULTS,
-                value=10,
-                help="Maximum number of articles to return"
-            )
+    #         # Search parameters
+    #         st.markdown("## 🔍 Search Parameters")
+    #         num_results = st.slider(
+    #             "Number of results",
+    #             min_value=1,
+    #             max_value=MAX_RESULTS,
+    #             value=10,
+    #             help="Maximum number of articles to return"
+    #         )
             
-            # Filters
-            st.markdown("### Filters")
-            author_filter = st.text_input(
-                "Author name contains",
-                placeholder="e.g., Smith, Bengio, etc.",
-                help="Filter by author name (partial match)"
-            )
+    #         # Filters
+    #         st.markdown("### Filters")
+    #         author_filter = st.text_input(
+    #             "Author name contains",
+    #             placeholder="e.g., Smith, Bengio, etc.",
+    #             help="Filter by author name (partial match)"
+    #         )
             
-            # Year filter
-            if hasattr(self, 'df') and 'published_date' in self.df.columns:
-                try:
-                    self.df['published_date'] = pd.to_datetime(self.df['published_date'], errors='coerce')
-                    years = sorted(self.df['published_date'].dt.year.dropna().unique(), reverse=True)
-                    year_filter = st.selectbox(
-                        "Publication year",
-                        ["All years"] + [str(int(y)) for y in years],
-                        index=0
-                    )
-                except:
-                    year_filter = "All years"
-            else:
-                year_filter = "All years"
+    #         # Year filter
+    #         if hasattr(self, 'df') and 'published_date' in self.df.columns:
+    #             try:
+    #                 self.df['published_date'] = pd.to_datetime(self.df['published_date'], errors='coerce')
+    #                 years = sorted(self.df['published_date'].dt.year.dropna().unique(), reverse=True)
+    #                 year_filter = st.selectbox(
+    #                     "Publication year",
+    #                     ["All years"] + [str(int(y)) for y in years],
+    #                     index=0
+    #                 )
+    #             except:
+    #                 year_filter = "All years"
+    #         else:
+    #             year_filter = "All years"
             
-            # Category filter
-            if hasattr(self, 'df') and 'primary_category' in self.df.columns:
-                categories = sorted([
-                    c for c in self.df["primary_category"].dropna().unique() 
-                    if c and c != 'Unknown'
-                ])
-                selected_categories = st.multiselect(
-                    "Categories",
-                    categories,
-                    default=categories[:3] if len(categories) >= 3 else categories,
-                    help="Select one or more categories"
-                )
-            else:
-                selected_categories = []
+    #         # Category filter
+    #         if hasattr(self, 'df') and 'primary_category' in self.df.columns:
+    #             categories = sorted([
+    #                 c for c in self.df["primary_category"].dropna().unique() 
+    #                 if c and c != 'Unknown'
+    #             ])
+    #             selected_categories = st.multiselect(
+    #                 "Categories",
+    #                 categories,
+    #                 default=categories[:3] if len(categories) >= 3 else categories,
+    #                 help="Select one or more categories"
+    #             )
+    #         else:
+    #             selected_categories = []
             
-            # Advanced options
-            with st.expander("Advanced Options"):
-                similarity_threshold = st.slider(
-                    "Minimum similarity",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=0.3,
-                    step=0.05,
-                    help="Filter out low similarity results"
-                )
+    #         # Advanced options
+    #         with st.expander("Advanced Options"):
+    #             similarity_threshold = st.slider(
+    #                 "Minimum similarity",
+    #                 min_value=0.0,
+    #                 max_value=1.0,
+    #                 value=0.3,
+    #                 step=0.05,
+    #                 help="Filter out low similarity results"
+    #             )
                 
-                rerank_method = st.selectbox(
-                    "Rerank method",
-                    ["Relevance", "Diversity", "Recent first"],
-                    index=0
-                )
+    #             rerank_method = st.selectbox(
+    #                 "Rerank method",
+    #                 ["Relevance", "Diversity", "Recent first"],
+    #                 index=0
+    #             )
             
-            # Display system info
-            mem = psutil.virtual_memory()
-            st.markdown(f"""
-            <div class='database-info'>
-            <strong>🖥️ System Resources:</strong><br>
-            Memory: {mem.used / (1024**3):.1f} GB / {mem.total / (1024**3):.1f} GB ({mem.percent}%)<br>
-            CPU: {psutil.cpu_percent()}%<br>
-            Threads: {psutil.Process().num_threads()}
-            </div>
-            """, unsafe_allow_html=True)
+    #         # Display system info
+    #         mem = psutil.virtual_memory()
+    #         st.markdown(f"""
+    #         <div class='database-info'>
+    #         <strong>🖥️ System Resources:</strong><br>
+    #         Memory: {mem.used / (1024**3):.1f} GB / {mem.total / (1024**3):.1f} GB ({mem.percent}%)<br>
+    #         CPU: {psutil.cpu_percent()}%<br>
+    #         Threads: {psutil.Process().num_threads()}
+    #         </div>
+    #         """, unsafe_allow_html=True)
 
-        # Initialize current chat if none exists
-        if st.session_state.current_chat_id is None:
-            new_chat_id = str(int(time.time()))
-            st.session_state.chat_history[new_chat_id] = {
-                "name": "Chat 1",
-                "messages": []
-            }
-            st.session_state.current_chat_id = new_chat_id
-            st.session_state.current_chat_name = st.session_state.chat_history[new_chat_id]["name"]
+    #     # Initialize current chat if none exists
+    #     if st.session_state.current_chat_id is None:
+    #         new_chat_id = str(int(time.time()))
+    #         st.session_state.chat_history[new_chat_id] = {
+    #             "name": "Chat 1",
+    #             "messages": []
+    #         }
+    #         st.session_state.current_chat_id = new_chat_id
+    #         st.session_state.current_chat_name = st.session_state.chat_history[new_chat_id]["name"]
 
-        # Display current chat name
-        st.markdown(f"### {st.session_state.current_chat_name}")
+    #     # Display current chat name
+    #     st.markdown(f"### {st.session_state.current_chat_name}")
 
-        # --- MAIN INTERFACE ---
-        tab_chat, tab_results = st.tabs(["Chat", "Results"])
+    #     # --- MAIN INTERFACE ---
+    #     tab_chat, tab_results = st.tabs(["Chat", "Results"])
 
-        with tab_chat:
-            # Display chat history in a container
-            chat_container = st.container()
-            with chat_container:
-                st.markdown('<div class="chat-container">', unsafe_allow_html=True)
-                for message in st.session_state.messages:
-                    with st.chat_message(message["role"]):
-                        st.markdown(message["content"])
-                st.markdown('</div>', unsafe_allow_html=True)
+    #     with tab_chat:
+    #         # Display chat history in a container
+    #         chat_container = st.container()
+    #         with chat_container:
+    #             st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+    #             for message in st.session_state.messages:
+    #                 with st.chat_message(message["role"]):
+    #                     st.markdown(message["content"])
+    #             st.markdown('</div>', unsafe_allow_html=True)
             
-            # Chat input - outside the container to stay visible
-            if prompt := st.chat_input("Ask about arXiv research..."):
-                # Add user message to chat
-                st.session_state.messages.append({"role": "user", "content": prompt})
-                with chat_container:
-                    with st.chat_message("user"):
-                        st.markdown(prompt)
+    #         # Chat input - outside the container to stay visible
+    #         if prompt := st.chat_input("Ask about arXiv research..."):
+    #             # Add user message to chat
+    #             st.session_state.messages.append({"role": "user", "content": prompt})
+    #             with chat_container:
+    #                 with st.chat_message("user"):
+    #                     st.markdown(prompt)
                 
-                try:
-                    # Prepare enhanced query with filters
-                    enhanced_query = prompt
+    #             try:
+    #                 # Prepare enhanced query with filters
+    #                 enhanced_query = prompt
                     
-                    # Apply filters
-                    if year_filter != "All years":
-                        enhanced_query += f" year:{year_filter}"
-                    if author_filter.strip():
-                        enhanced_query += f" author:{author_filter.strip()}"
-                    if selected_categories:
-                        enhanced_query += " " + " ".join(f"category:{cat}" for cat in selected_categories)
+    #                 # Apply filters
+    #                 if year_filter != "All years":
+    #                     enhanced_query += f" year:{year_filter}"
+    #                 if author_filter.strip():
+    #                     enhanced_query += f" author:{author_filter.strip()}"
+    #                 if selected_categories:
+    #                     enhanced_query += " " + " ".join(f"category:{cat}" for cat in selected_categories)
                     
-                    # Perform search with progress bar
-                    # with st.spinner("Searching arXiv database..."):
-                    #     search_progress = st.progress(0)
+    #                 # Perform search with progress bar
+    #                 # with st.spinner("Searching arXiv database..."):
+    #                 #     search_progress = st.progress(0)
                         
-                    #     # Track query metrics
-                    #     start_time = time.time()
-                    #     results = self.search_articles(
-                    #         enhanced_query, 
-                    #         k=num_results * 3  # Get more results for filtering
-                    #     )
-                    #     search_time = time.time() - start_time
+    #                 #     # Track query metrics
+    #                 #     start_time = time.time()
+    #                 #     results = self.search_articles(
+    #                 #         enhanced_query, 
+    #                 #         k=num_results * 3  # Get more results for filtering
+    #                 #     )
+    #                 #     search_time = time.time() - start_time
 
-                    with st.spinner("Searching arXiv database..."):
-                        search_progress = st.progress(0)
+    #                 with st.spinner("Searching arXiv database..."):
+    #                     search_progress = st.progress(0)
                         
-                        # Track query metrics
-                        start_time = time.time()
-                        results = self.search_articles(
-                            enhanced_query, 
-                            k=num_results * 3,  # Get more results for filtering
-                            author_filter=author_filter.strip() if author_filter.strip() else None
-                        )
-                        search_time = time.time() - start_time
+    #                     # Track query metrics
+    #                     start_time = time.time()
+    #                     results = self.search_articles(
+    #                         enhanced_query, 
+    #                         k=num_results * 3,  # Get more results for filtering
+    #                         author_filter=author_filter.strip() if author_filter.strip() else None
+    #                     )
+    #                     search_time = time.time() - start_time
                         
-                        # Apply post-search filters
-                        filtered_results = [
-                            r for r in results 
-                            if r.get('similarity', 0) >= similarity_threshold
-                        ]
+    #                     # Apply post-search filters
+    #                     filtered_results = [
+    #                         r for r in results 
+    #                         if r.get('similarity', 0) >= similarity_threshold
+    #                     ]
                         
-                        # Apply reranking
-                        if rerank_method == "Recent first" and 'published_date' in filtered_results[0]:
-                            filtered_results.sort(
-                                key=lambda x: x.get('published_date', ''),
-                                reverse=True
-                            )
-                        elif rerank_method == "Diversity":
-                            # Simple diversity - take top from each category
-                            categories = {}
-                            for res in filtered_results:
-                                cat = res.get('primary_category', 'other')
-                                if cat not in categories or res['similarity'] > categories[cat]['similarity']:
-                                    categories[cat] = res
-                            filtered_results = list(categories.values())
+    #                     # Apply reranking
+    #                     if rerank_method == "Recent first" and 'published_date' in filtered_results[0]:
+    #                         filtered_results.sort(
+    #                             key=lambda x: x.get('published_date', ''),
+    #                             reverse=True
+    #                         )
+    #                     elif rerank_method == "Diversity":
+    #                         # Simple diversity - take top from each category
+    #                         categories = {}
+    #                         for res in filtered_results:
+    #                             cat = res.get('primary_category', 'other')
+    #                             if cat not in categories or res['similarity'] > categories[cat]['similarity']:
+    #                                 categories[cat] = res
+    #                         filtered_results = list(categories.values())
                         
-                        # Limit to requested number of results
-                        filtered_results = filtered_results[:num_results]
+    #                     # Limit to requested number of results
+    #                     filtered_results = filtered_results[:num_results]
                         
-                        search_progress.progress(100)
+    #                     search_progress.progress(100)
                     
-                    # Generate response
-                    with st.spinner("Generating response..."):
-                        response = self.generate_response(prompt, filtered_results)
-                        st.session_state.messages.append({"role": "assistant", "content": response})
-                        with chat_container:
-                            with st.chat_message("assistant"):
-                                st.markdown(response)
+    #                 # Generate response
+    #                 with st.spinner("Generating response..."):
+    #                     response = self.generate_response(prompt, filtered_results)
+    #                     st.session_state.messages.append({"role": "assistant", "content": response})
+    #                     with chat_container:
+    #                         with st.chat_message("assistant"):
+    #                             st.markdown(response)
                     
-                    # Store results and stats
-                    st.session_state.search_results = filtered_results
-                    st.session_state.query_stats = {
-                        "query": prompt,
-                        "time": search_time,
-                        "total_results": len(results),
-                        "filtered_results": len(filtered_results),
-                        "similarity_threshold": similarity_threshold
-                    }
+    #                 # Store results and stats
+    #                 st.session_state.search_results = filtered_results
+    #                 st.session_state.query_stats = {
+    #                     "query": prompt,
+    #                     "time": search_time,
+    #                     "total_results": len(results),
+    #                     "filtered_results": len(filtered_results),
+    #                     "similarity_threshold": similarity_threshold
+    #                 }
                     
-                    # Update chat history
-                    if st.session_state.current_chat_id:
-                        st.session_state.chat_history[st.session_state.current_chat_id]["messages"] = st.session_state.messages
+    #                 # Update chat history
+    #                 if st.session_state.current_chat_id:
+    #                     st.session_state.chat_history[st.session_state.current_chat_id]["messages"] = st.session_state.messages
                     
-                except Exception as e:
-                    error_msg = f"Error processing query: {str(e)}"
-                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                    with chat_container:
-                        with st.chat_message("assistant"):
-                            st.markdown(error_msg)
-                    logger.error(f"Search error: {str(e)}")
+    #             except Exception as e:
+    #                 error_msg = f"Error processing query: {str(e)}"
+    #                 st.session_state.messages.append({"role": "assistant", "content": error_msg})
+    #                 with chat_container:
+    #                     with st.chat_message("assistant"):
+    #                         st.markdown(error_msg)
+    #                 logger.error(f"Search error: {str(e)}")
 
-        with tab_results:
-            if st.session_state.search_results:
-                st.markdown(f"### 📊 Found {len(st.session_state.search_results)} results")
+    #     with tab_results:
+    #         if st.session_state.search_results:
+    #             st.markdown(f"### 📊 Found {len(st.session_state.search_results)} results")
                 
-                # Display stats
-                if st.session_state.query_stats:
-                    stats = st.session_state.query_stats
-                    st.markdown(f"""
-                    Query: "{stats['query']}"<br>
-                    Search time: {stats['time']:.2f}s | 
-                    Initial results: {stats['total_results']} | 
-                    After filtering: {stats['filtered_results']}
-                    """, unsafe_allow_html=True)
+    #             # Display stats
+    #             if st.session_state.query_stats:
+    #                 stats = st.session_state.query_stats
+    #                 st.markdown(f"""
+    #                 Query: "{stats['query']}"<br>
+    #                 Search time: {stats['time']:.2f}s | 
+    #                 Initial results: {stats['total_results']} | 
+    #                 After filtering: {stats['filtered_results']}
+    #                 """, unsafe_allow_html=True)
                 
-                # Display results
-                for i, result in enumerate(st.session_state.search_results, 1):
-                    with st.expander(f"{i}. {result.get('title', 'No Title')[:120]}...", expanded=False):
-                        st.markdown('<div class="result-card">', unsafe_allow_html=True)
+    #             # Display results
+    #             for i, result in enumerate(st.session_state.search_results, 1):
+    #                 with st.expander(f"{i}. {result.get('title', 'No Title')[:120]}...", expanded=False):
+    #                     st.markdown('<div class="result-card">', unsafe_allow_html=True)
                         
-                        # Header with similarity score
-                        col1, col2 = st.columns([4, 1])
-                        with col1:
-                            st.markdown(f"**{result.get('title', 'No Title')}**")
-                        with col2:
-                            st.markdown(f"`Similarity: {result.get('similarity', 0):.3f}`")
+    #                     # Header with similarity score
+    #                     col1, col2 = st.columns([4, 1])
+    #                     with col1:
+    #                         st.markdown(f"**{result.get('title', 'No Title')}**")
+    #                     with col2:
+    #                         st.markdown(f"`Similarity: {result.get('similarity', 0):.3f}`")
                         
-                        # Metadata row
-                        meta_col1, meta_col2, meta_col3 = st.columns([2, 2, 1])
+    #                     # Metadata row
+    #                     meta_col1, meta_col2, meta_col3 = st.columns([2, 2, 1])
                         
-                        with meta_col1:
-                            authors = result.get('author', 'Unknown')
-                            if len(authors) > 60:
-                                authors = authors[:57] + "..."
-                            st.markdown(f"**Authors**: {authors}")
+    #                     with meta_col1:
+    #                         authors = result.get('author', 'Unknown')
+    #                         if len(authors) > 60:
+    #                             authors = authors[:57] + "..."
+    #                         st.markdown(f"**Authors**: {authors}")
                         
-                        with meta_col2:
-                            pub_date = result.get('published_date', 'Unknown')
-                            if isinstance(pub_date, str):
-                                try:
-                                    pub_date = pd.to_datetime(pub_date).strftime('%Y-%m-%d')
-                                except:
-                                    pass
-                            st.markdown(f"**Published**: {pub_date}")
+    #                     with meta_col2:
+    #                         pub_date = result.get('published_date', 'Unknown')
+    #                         if isinstance(pub_date, str):
+    #                             try:
+    #                                 pub_date = pd.to_datetime(pub_date).strftime('%Y-%m-%d')
+    #                             except:
+    #                                 pass
+    #                         st.markdown(f"**Published**: {pub_date}")
                         
-                        with meta_col3:
-                            cat = result.get('primary_category', result.get('category', ''))
-                            st.markdown(f"**Category**: {cat[:20]}" if cat else "**Category**: N/A")
+    #                     with meta_col3:
+    #                         cat = result.get('primary_category', result.get('category', ''))
+    #                         st.markdown(f"**Category**: {cat[:20]}" if cat else "**Category**: N/A")
                         
-                        # Summary
-                        summary = result.get('summary', 'No summary available')
-                        st.markdown(f"**Summary**: {summary}")
+    #                     # Summary
+    #                     summary = result.get('summary', 'No summary available')
+    #                     st.markdown(f"**Summary**: {summary}")
                         
-                        # Links
-                        link_col1, link_col2 = st.columns(2)
-                        with link_col1:
-                            arxiv_id = result.get('id', '')
-                            if arxiv_id:
-                                st.markdown(f"[📄 arXiv Paper](https://arxiv.org/abs/{arxiv_id})")
+    #                     # Links
+    #                     link_col1, link_col2 = st.columns(2)
+    #                     with link_col1:
+    #                         arxiv_id = result.get('id', '')
+    #                         if arxiv_id:
+    #                             st.markdown(f"[📄 arXiv Paper](https://arxiv.org/abs/{arxiv_id})")
                         
-                        with link_col2:
-                            doi = result.get('doi', '')
-                            if doi and pd.notna(doi):
-                                st.markdown(f"[🌐 DOI](https://doi.org/{doi})")
+    #                     with link_col2:
+    #                         doi = result.get('doi', '')
+    #                         if doi and pd.notna(doi):
+    #                             st.markdown(f"[🌐 DOI](https://doi.org/{doi})")
                         
-                        st.markdown('</div>', unsafe_allow_html=True)
-            else:
-                st.info("No results to display. Perform a search in the Chat tab.")
+    #                     st.markdown('</div>', unsafe_allow_html=True)
+    #         else:
+    #             st.info("No results to display. Perform a search in the Chat tab.")
 
 
     def detect_intent(self, query: str) -> str:
@@ -1914,45 +2335,111 @@ class ArxivChatbot:
         return len(tokens) <= 3 and stop_hits == 0
 
 
+    # def _generate_recent_response(self, query: str, results: List[Dict]) -> str:
+    #     """Generate recent papers response for any topic."""
+    #     if not results:
+    #         return self._generate_no_results_response(query, "recent")
+        
+    #     # Sort by publication date (most recent first)
+    #     sorted_results = sorted(results, 
+    #                         key=lambda x: x.get('published_date', ''), 
+    #                         reverse=True)
+        
+    #     # Filter for truly recent papers (last 2 years)
+    #     current_year = 2025
+    #     recent_papers = []
+        
+    #     for res in sorted_results:
+    #         pub_date = res.get('published_date', '')
+    #         if pub_date:
+    #             year = pub_date.strftime('%Y') if isinstance(pub_date, pd.Timestamp) else pub_date[:4]
+    #             if year.isdigit() and int(year) >= current_year - 2:
+    #                 recent_papers.append(res)
+        
+    #     if not recent_papers:
+    #         # If no recent papers, show the most recent ones available
+    #         recent_papers = sorted_results[:5]
+        
+    #     response = f"**Recent papers on '{query}':**\n\n"
+        
+    #     if recent_papers == sorted_results[:5]:
+    #         response += f"Found {len(recent_papers)} most recent papers (may not be from last 2 years):\n\n"
+    #     else:
+    #         response += f"Found {len(recent_papers)} papers from the last 2 years:\n\n"
+        
+    #     for i, paper in enumerate(recent_papers[:5], 1):
+    #         response += f"**{i}. {paper.get('title', 'Untitled')}**\n"
+    #         response += f"   📅 {paper.get('published_date', 'Unknown date')}\n"
+    #         response += f"   👥 {paper.get('author', 'Unknown authors')[:80]}...\n"
+    #         response += f"   📂 {paper.get('primary_category', 'Unknown category')}\n\n"
+        
+    #     return response 
+
+
+
+
     def _generate_recent_response(self, query: str, results: List[Dict]) -> str:
         """Generate recent papers response for any topic."""
         if not results:
             return self._generate_no_results_response(query, "recent")
+        
+        # Extract year from query if specified
+        import re
+        year_match = re.search(r"\b(20[2-9][0-9])\b", query)
+        target_year = year_match.group(1) if year_match else None
         
         # Sort by publication date (most recent first)
         sorted_results = sorted(results, 
                             key=lambda x: x.get('published_date', ''), 
                             reverse=True)
         
-        # Filter for truly recent papers (last 2 years)
-        current_year = 2025
-        recent_papers = []
-        
+        filtered_papers = []
         for res in sorted_results:
             pub_date = res.get('published_date', '')
-            if pub_date:
-                year = pub_date.strftime('%Y') if isinstance(pub_date, pd.Timestamp) else pub_date[:4]
-                if year.isdigit() and int(year) >= current_year - 2:
-                    recent_papers.append(res)
+            if not pub_date:
+                continue
+                
+            # Extract year from publication date
+            if isinstance(pub_date, pd.Timestamp):
+                paper_year = str(pub_date.year)
+            elif isinstance(pub_date, str):
+                paper_year = pub_date[:4] if len(pub_date) >= 4 else ''
+            else:
+                continue
+                
+            if target_year:
+                # If specific year requested, filter for that exact year
+                if paper_year == target_year:
+                    filtered_papers.append(res)
+            else:
+                # Default behavior: last 2 years
+                current_year = 2025  # You might want to make this dynamic
+                if paper_year.isdigit() and int(paper_year) >= current_year - 2:
+                    filtered_papers.append(res)
         
-        if not recent_papers:
+        if not filtered_papers:
+            if target_year:
+                return f"No papers found from year {target_year}."
             # If no recent papers, show the most recent ones available
-            recent_papers = sorted_results[:5]
+            filtered_papers = sorted_results[:5]
         
         response = f"**Recent papers on '{query}':**\n\n"
         
-        if recent_papers == sorted_results[:5]:
-            response += f"Found {len(recent_papers)} most recent papers (may not be from last 2 years):\n\n"
+        if target_year:
+            response += f"Found {len(filtered_papers)} papers from {target_year}:\n\n"
+        elif filtered_papers == sorted_results[:5]:
+            response += f"Found {len(filtered_papers)} most recent papers (may not be from last 2 years):\n\n"
         else:
-            response += f"Found {len(recent_papers)} papers from the last 2 years:\n\n"
+            response += f"Found {len(filtered_papers)} papers from the last 2 years:\n\n"
         
-        for i, paper in enumerate(recent_papers[:5], 1):
+        for i, paper in enumerate(filtered_papers[:5], 1):
             response += f"**{i}. {paper.get('title', 'Untitled')}**\n"
             response += f"   📅 {paper.get('published_date', 'Unknown date')}\n"
             response += f"   👥 {paper.get('author', 'Unknown authors')[:80]}...\n"
             response += f"   📂 {paper.get('primary_category', 'Unknown category')}\n\n"
         
-        return response 
+        return response
+
 
 
     def _generate_summary_response(self, query: str, results: List[Dict]) -> str:
