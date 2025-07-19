@@ -2,6 +2,15 @@
 
 Assistant de recherche avancé pour explorer les articles scientifiques d'arXiv avec interface web, recherche sémantique, filtres puissants et réponses conversationnelles.
 
+<p align="center">
+  <img src="images/How many papers are there in machine learning.png" alt="ML Paper Count" width="45%"/>
+  <img src="images/written by Nathaniel Eldredge.png" alt="Written by Nathaniel Eldredge" width="45%"/>
+</p>
+<p align="center">
+  <img src="images/Can machine learning identify language varieties.png" alt="ML Language Varieties" width="45%"/>
+  <img src="images/Can machine learning identify language varieties Result.png" alt="ML Language Varieties Result" width="45%"/>
+</p>
+
 ---
 
 ## Sommaire
@@ -26,19 +35,19 @@ Assistant de recherche avancé pour explorer les articles scientifiques d'arXiv 
 
 **arxiv-chatbot** est un assistant de recherche interactif pour explorer, filtrer et analyser les articles scientifiques d'arXiv. Il propose :
 
-* Une interface web moderne (Streamlit)
-* Un moteur de recherche sémantique rapide (FAISS)
-* Des filtres avancés (auteur, année, catégorie, similarité...)
-* Des outils de nettoyage et de préparation de données pour de grands jeux de données
-* Des scripts de récupération des données depuis arXiv
+- Une interface web moderne (Streamlit)
+- Un moteur de recherche sémantique rapide (FAISS)
+- Des filtres avancés (auteur, année, catégorie, similarité...)
+- Des outils de nettoyage et de préparation de données pour de grands jeux de données
+- Des scripts de récupération des données depuis arXiv
 
 ---
 
 ## 2. Prérequis
 
-* **Python 3.8+** (recommandé : 3.10 ou 3.11)
-* **Git** (pour cloner le projet)
-* **Connexion internet** (pour télécharger les modèles et dépendances)
+- **Python 3.8+** (recommandé : 3.10 ou 3.11)
+- **Git** (pour cloner le projet)
+- **Connexion internet** (pour télécharger les modèles et dépendances)
 
 ---
 
@@ -86,13 +95,13 @@ python src/data_cleaning.py --input data/raw/articles.csv --output data/processe
 
 **Paramètres principaux** :
 
-* `--input` : chemin du fichier CSV brut contenant les articles arXiv
-* `--output` : chemin du fichier de sortie nettoyé
-* `--deep-clean` : active un nettoyage avancé (suppression des symboles, normalisation, etc.)
-* `--use-spacy` : utilise la bibliothèque spaCy pour l'analyse linguistique (tokenisation, POS, etc.)
-* `--remove-stopwords` : supprime les mots vides ("le", "de", "and"...) pour améliorer la qualité des embeddings
-* `--lemmatize` : réduit les mots à leur lemme (forme de base) ex : "running" devient "run"
-* `--sample-size` : limite le nombre de lignes à traiter (utile pour tests rapides ou faible RAM)
+- `--input` : chemin du fichier CSV brut contenant les articles arXiv
+- `--output` : chemin du fichier de sortie nettoyé
+- `--deep-clean` : active un nettoyage avancé (suppression des symboles, normalisation, etc.)
+- `--use-spacy` : utilise la bibliothèque spaCy pour l'analyse linguistique (tokenisation, POS, etc.)
+- `--remove-stopwords` : supprime les mots vides ("le", "de", "and"...) pour améliorer la qualité des embeddings
+- `--lemmatize` : réduit les mots à leur lemme (forme de base) ex : "running" devient "run"
+- `--sample-size` : limite le nombre de lignes à traiter (utile pour tests rapides ou faible RAM)
 
 ### b. Générer les embeddings (vecteurs sémantiques)
 
@@ -102,9 +111,9 @@ python src/generate_index.py --data data/processed/articles_clean.csv --output d
 
 **Paramètres principaux** :
 
-* `--data` : fichier CSV nettoyé à indexer
-* `--output` : répertoire où stocker l'index FAISS et les métadonnées
-* `--text_field` : colonne du fichier CSV contenant le texte à transformer en vecteurs (ex : "summary")
+- `--data` : fichier CSV nettoyé à indexer
+- `--output` : répertoire où stocker l'index FAISS et les métadonnées
+- `--text_field` : colonne du fichier CSV contenant le texte à transformer en vecteurs (ex : "summary")
 
 ---
 
@@ -132,10 +141,10 @@ python src/chatbot.py
 
 ## 6. Utilisation
 
-* Tapez une question scientifique librement.
-* Utilisez les filtres par catégorie, date, auteur ou similarité.
-* Utilisez l’onglet **Chat** pour interagir.
-* Consultez l’onglet **Résultats** pour les articles pertinents.
+- Tapez une question scientifique librement.
+- Utilisez les filtres par catégorie, date, auteur ou similarité.
+- Utilisez l’onglet **Chat** pour interagir.
+- Consultez l’onglet **Résultats** pour les articles pertinents.
 
 ---
 
@@ -194,30 +203,30 @@ arxiv-chatbot/
 
 ### a. `bulk_arxiv_to_mongodb.ipynb`
 
-* **But** : import massif historique depuis arXiv.
-* **Stockage** : MongoDB (optimisé pour gros volumes).
-* **Multithread** : via `MAX_THREADS` pour parallélisation.
+- **But** : import massif historique depuis arXiv.
+- **Stockage** : MongoDB (optimisé pour gros volumes).
+- **Multithread** : via `MAX_THREADS` pour parallélisation.
 
 ### b. `daily_arxiv_updater.ipynb`
 
-* **But** : synchronisation quotidienne automatique.
-* **Filtrage** : télécharge uniquement les nouveaux articles.
-* **Nettoyage** : évite les doublons dans `articles.csv`.
+- **But** : synchronisation quotidienne automatique.
+- **Filtrage** : télécharge uniquement les nouveaux articles.
+- **Nettoyage** : évite les doublons dans `articles.csv`.
 
 ---
 
 ## 10. Configuration avancée
 
-* `--memory-limit` : limite mémoire pour traitement lourd.
-* `--model` : changer le modèle de vectorisation (par ex. `all-MiniLM-L6-v2`, `paraphrase-MiniLM`, etc.)
+- `--memory-limit` : limite mémoire pour traitement lourd.
+- `--model` : changer le modèle de vectorisation (par ex. `all-MiniLM-L6-v2`, `paraphrase-MiniLM`, etc.)
 
 ---
 
 ## 11. Dépannage
 
-* **Erreur de mémoire** : réduire `--sample-size` ou augmenter RAM.
-* **Aucun résultat** : s'assurer que les embeddings ont bien été générés.
-* **Erreur de dépendance** : exécuter `pip install -r requirements.txt`.
+- **Erreur de mémoire** : réduire `--sample-size` ou augmenter RAM.
+- **Aucun résultat** : s'assurer que les embeddings ont bien été générés.
+- **Erreur de dépendance** : exécuter `pip install -r requirements.txt`.
 
 ---
 
