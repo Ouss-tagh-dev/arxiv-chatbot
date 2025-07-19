@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Script to generate FAISS index and metadata for arXiv chatbot.
 Optimized for memory-constrained systems with sequential processing.
@@ -18,8 +17,8 @@ import faiss
 # Add src directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
-from src.embedder import ArxivEmbedder
-from src.data_loader import ArxivDataLoader
+from embedder import ArxivEmbedder
+from data_loader import ArxivDataLoader
 
 # Configure logging
 logging.basicConfig(

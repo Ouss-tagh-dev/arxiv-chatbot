@@ -4,9 +4,10 @@ Handles comprehensive text cleaning, normalization, and NLP preprocessing.
 """
 
 import pandas as pd
-import numpy as np
 import re
-from typing import Dict, List, Optional, Tuple, Set
+import ast
+import json
+from typing import Dict, List, Set
 import logging
 from pathlib import Path
 import unicodedata
@@ -16,12 +17,12 @@ import string
 from collections import Counter
 import nltk
 from nltk.corpus import stopwords
+from difflib import SequenceMatcher
 from nltk.tokenize import word_tokenize, sent_tokenize
 from nltk.stem import WordNetLemmatizer, PorterStemmer
-from nltk.chunk import ne_chunk
-from nltk.tag import pos_tag
 import spacy
 from sklearn.feature_extraction.text import TfidfVectorizer
+
 
 # Download required NLTK data
 try:
@@ -29,10 +30,10 @@ try:
 except LookupError:
     nltk.download('punkt')
 
-# try:
-#     nltk.data.find('tokenizers/punkt_tab')
-# except LookupError:
-#     nltk.download('punkt_tab')
+try:
+    nltk.data.find('tokenizers/punkt_tab')
+except LookupError:
+    nltk.download('punkt_tab')
     
 try:
     nltk.data.find('corpora/stopwords')
@@ -108,7 +109,6 @@ class EnhancedArxivDataCleaner:
             'eg', 'ie', 'cf', 'sec', 'fig', 'eq', 'ref', 'def', 'thm',
             'prop', 'lemma', 'cor', 'proof', 'qed', 'iff', 'wrt', 'wlog'
         }
-
         
     def _load_comprehensive_stop_words(self) -> Set[str]:
         """Load comprehensive stop words including NLTK and custom scientific terms."""
@@ -292,7 +292,6 @@ class EnhancedArxivDataCleaner:
         df['comment'] = df['comment'].apply(lambda x: self._clean_text_basic(x))
         
         return df
-
 
     def _deep_clean_text(self, text: str, deep_clean: bool = True) -> str:
         """
@@ -484,10 +483,8 @@ class EnhancedArxivDataCleaner:
         logger.info(f"Removed {removed_count} duplicate articles")
         return df_clean
 
-
     def _remove_fuzzy_duplicates(self, df: pd.DataFrame) -> pd.DataFrame:
         """Remove articles with very similar titles using fuzzy matching."""
-        from difflib import SequenceMatcher
         
         # Create normalized titles for comparison
         df['title_norm'] = df['title'].str.lower().str.strip()
@@ -496,9 +493,6 @@ class EnhancedArxivDataCleaner:
         
         # Remove exact matches
         df_clean = df.drop_duplicates(subset=['title_norm'], keep='first')
-        
-        # TODO: Add fuzzy matching for near-duplicates (computationally expensive)
-        # For now, just remove exact matches
         
         df_clean = df_clean.drop('title_norm', axis=1)
         return df_clean
@@ -636,7 +630,6 @@ class EnhancedArxivDataCleaner:
     
     def _clean_categories(self, df: pd.DataFrame) -> pd.DataFrame:
         """Enhanced category cleaning (robust extraction and fallback)."""
-        import ast
         logger.info("Cleaning categories (robust)...")
 
         # Remove the _id column if it exists
@@ -689,7 +682,6 @@ class EnhancedArxivDataCleaner:
             df['category'] = df['category'].apply(clean_category_string)
 
         return df
-
 
     def _handle_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
         """Enhanced missing value handling."""
@@ -879,68 +871,6 @@ class EnhancedArxivDataCleaner:
         text, deep_clean, instance = args
         return instance._deep_clean_text(text, deep_clean)
 
-    # def _enhanced_text_cleaning(self, df: pd.DataFrame, deep_clean: bool) -> pd.DataFrame:
-    #     """Optimized text cleaning for large datasets"""
-    #     from multiprocessing import Pool, cpu_count
-        
-    #     # Prepare arguments
-    #     title_args = [(text, deep_clean, self) for text in df['title'].fillna('').astype(str)]
-    #     summary_args = [(text, deep_clean, self) for text in df['summary'].fillna('').astype(str)]
-        
-    #     with Pool(cpu_count()) as pool:
-    #         df['title'] = pool.map(self._clean_text_wrapper, title_args)
-    #         df['summary'] = pool.map(self._clean_text_wrapper, summary_args)
-            
-    #     return df
-
-    #     def save_cleaned_data(self, df: pd.DataFrame, output_path: str, save_separate_fields: bool = True):
-    #         """
-    #         Save cleaned data with multiple output formats.
-            
-    #         Args:
-    #             df: Cleaned DataFrame
-    #             output_path: Path to save the cleaned data
-    #             save_separate_fields: Whether to save separate cleaned fields
-    #         """
-    #         output_path = Path(output_path)
-    #         output_path.parent.mkdir(parents=True, exist_ok=True)
-            
-    #         # Save main dataset
-    #         df.to_csv(output_path, index=False)
-            
-    #         # Save separate cleaned fields if requested
-    #         if save_separate_fields:
-    #             # Save only essential columns for NLP model
-    #             essential_cols = ['id', 'title', 'title_clean', 'summary', 'summary_clean', 
-    #                             'author', 'published_date', 'primary_category', 'category']
-                
-    #             # Add optional columns if they exist
-    #             optional_cols = ['keywords', 'doi', 'journal_ref']
-    #             for col in optional_cols:
-    #                 if col in df.columns:
-    #                     essential_cols.append(col)
-                
-    #             df_essential = df[essential_cols]
-    #             essential_path = output_path.parent / f"essential_{output_path.name}"
-    #             df_essential.to_csv(essential_path, index=False)
-                
-    #             # Save text-only version for training
-    #             text_only_path = output_path.parent / f"text_only_{output_path.name}"
-    #             df_text = df[['id', 'title_clean', 'summary_clean', 'primary_category']]
-    #             df_text.to_csv(text_only_path, index=False)
-            
-    #         # Save cleaning statistics
-    #         stats_path = output_path.parent / "enhanced_cleaning_stats.json"
-    #         import json
-    #         with open(stats_path, 'w') as f:
-    #             json.dump(self.cleaning_stats, f, indent=2, default=str)
-            
-    #         logger.info(f"Saved cleaned data to {output_path}")
-    #         if save_separate_fields:
-    #             logger.info(f"Saved essential fields to {essential_path}")
-    #             logger.info(f"Saved text-only version to {text_only_path}")
-    #         logger.info(f"Saved cleaning statistics to {stats_path}")
-
     def save_cleaned_data(self, df: pd.DataFrame, output_path: str, save_separate_fields: bool = True):
         """
         Save cleaned data with multiple output formats.
@@ -979,7 +909,6 @@ class EnhancedArxivDataCleaner:
         
         # Save cleaning statistics
         stats_path = output_path.parent / "enhanced_cleaning_stats.json"
-        import json
         with open(stats_path, 'w') as f:
             json.dump(self.cleaning_stats, f, indent=2, default=str)
         
@@ -1196,7 +1125,6 @@ def batch_process_texts(texts: List[str], processor: EnhancedTextPreprocessor,
             logger.info(f"Processed {i + len(batch)} texts")
     
     return processed_texts
-
 
 def analyze_dataset_quality(df: pd.DataFrame) -> Dict:
     """

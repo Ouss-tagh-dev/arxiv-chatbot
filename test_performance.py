@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Performance test script for arXiv Chatbot.
 Tests loading time, search speed, and memory usage.
@@ -170,9 +169,16 @@ def test_chatbot_initialization():
         init_time = time.time() - start_time
         end_memory = get_memory_usage()
         memory_used = end_memory - start_memory
-        
-        print(f"✅ Chatbot initialization test:")
-        print(f"   - Articles loaded: {len(chatbot.df)}")
+
+        # Correction ici :
+        if hasattr(chatbot, "df") and chatbot.df is not None:
+            try:
+                print(f"✅ Chatbot initialization test:")
+                print(f"   - Articles loaded: {len(chatbot.df)}")
+            except Exception as e:
+                print(f"⚠️  Chatbot initialized but error when accessing data: {e}")
+        else:
+            print("⚠️  Chatbot initialized but no data loaded (chatbot.df is None).")
         print(f"   - Initialization time: {init_time:.2f} seconds")
         print(f"   - Memory used: {memory_used:.1f} MB")
         

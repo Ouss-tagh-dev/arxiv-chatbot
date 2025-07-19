@@ -26,12 +26,8 @@ def setup_directories():
     """Create necessary directories for data processing."""
     # In data_cleaning.py, modify setup_directories()
     directories = [
-        "data/raw",
-        "data/interim",  # For intermediate processing files
-        "data/processed",  # Final cleaned data for models
-        "data/cleaned",  # Various cleaned versions
-        "logs",
-        "stats"  # Separate directory for statistics
+        "data/raw",        # Stores the raw downloaded data (e.g., articles.csv)
+        "data/processed",  # Stores the cleaned and ready-to-use data (e.g., articles_clean.csv, essential_articles_clean.csv...)
     ]
     
     for directory in directories:
